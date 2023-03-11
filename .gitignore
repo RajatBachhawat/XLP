@@ -1,0 +1,18 @@
+# Executables
+*
+!**.*
+**.out
+
+# Makefile (don't ignore)
+!Makefile
+
+# Directories
+libbpf-bootstrap/
+.vscode/
+.output/
+
+# Custom
+test.c
+
+# Todo
+todo
