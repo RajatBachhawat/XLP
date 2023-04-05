@@ -3,6 +3,9 @@
 !**.*
 **.out
 
+# logs directory (don't ignore)
+!logs/
+
 # Makefile (don't ignore)
 !Makefile
 
