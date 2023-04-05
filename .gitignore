@@ -6,6 +6,9 @@
 # Makefile (don't ignore)
 !Makefile
 
+# Dockerfile (don't ignore)
+!Dockerfile
+
 # Directories
 libbpf-bootstrap/
 .vscode/

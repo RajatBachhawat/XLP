@@ -33,6 +33,9 @@
 #define SYSCALL_GETPEERNAME            52
 #define SYSCALL_SETSOCKOPT             54
 #define SYSCALL_GETSOCKOPT             55
+#define SYSCALL_CLONE                  56
+#define SYSCALL_FORK                   57
+#define SYSCALL_VFORK                  58
 #define SYSCALL_EXECVE                 59
 #define SYSCALL_EXIT                   60
 #define SYSCALL_FCNTL                  72

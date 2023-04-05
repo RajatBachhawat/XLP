@@ -8,18 +8,6 @@
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-struct {
-	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 256 * 1024);
-} rb SEC(".maps");
-
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, u32);
-    __type(value, struct copy_str);
-    __uint(max_entries, 10240);
-} pid_exec_mapper SEC(".maps");
-
 int mypid = 0;
 
 /* Compare two strings (whose sizes are known) passed for equality */
@@ -113,46 +101,52 @@ static __always_inline int check_log_filepath(unsigned int fd) {
     return (app_dirlevel == log_dirlevel + 1 && log_dirlevel == var_dirlevel + 1);
 }
 
-SEC("tp/syscalls/sys_enter_read")
-int handle_read(struct trace_event_raw_sys_enter *ctx)
+SEC("tp/syscalls/sys_exit_read")
+int handle_read_exit(struct trace_event_raw_sys_exit *ctx)
 {
     /* 
     ctx->args[0] : unsigned int fd
     ctx->args[1] : char *buf
     ctx->args[2] : unsigned int count
     */
+    FILTER_SELF
     void *event_data;
     struct read_data_t *read_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
-    u64 tgid_pid = bpf_get_current_pid_tgid();
 
     /* Reserve space in event queue */
     event_data = reserve_in_event_queue(&rb, sizeof(struct read_data_t), 0);
     if(!event_data)
         return 0;
     /* Tag the entry with the syscall_id */
-    read_data = (struct read_data_t *)init_event(event_data, SYSCALL_READ);
+    read_data = (struct read_data_t *)init_event_header(event_data, SYSCALL_READ);
     
     /* Task and event context */
-    read_data->ts =  bpf_ktime_get_boot_ns(); // time in nanoseconds when syscall was called
-    read_data->syscall_id = SYSCALL_READ; // syscall id
-    read_data->pid = (tgid_pid >> 32); // process id
-    read_data->tgid = tgid_pid;
-    read_data->ppid = BPF_CORE_READ(curr, real_parent, tgid); // parent process id
-    bpf_get_current_comm(&read_data->comm, sizeof(read_data->comm)); // command of the task that made the syscall
+    init_event(&read_data->event, curr, SYSCALL_READ);
+
+    /* Lookup in args map */
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
-    read_data->fd = (unsigned int)ctx->args[0];
-    read_data->buf = (char *)ctx->args[1];
-    read_data->count = (unsigned int)ctx->args[2];
+    if(ctx_args != NULL && read_data != NULL)
+    {
+        read_data->fd = (unsigned int)ctx_args->args[0];
+        read_data->buf = (char *)ctx_args->args[1];
+        read_data->count = (unsigned int)ctx_args->args[2];
+        read_data->retval = ctx->ret;
+    }
     
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
     /* Submit to event queue */
     bpf_ringbuf_submit(event_data, 0);
     return 0;
 }
 
-SEC("tp/syscalls/sys_enter_write")
-int handle_write(struct trace_event_raw_sys_enter *ctx)
+SEC("tp/syscalls/sys_exit_write")
+int handle_write_exit(struct trace_event_raw_sys_exit *ctx)
 {
     /* 
     ctx->args[0] : unsigned int fd
@@ -165,57 +159,66 @@ int handle_write(struct trace_event_raw_sys_enter *ctx)
         return 0;
     }
 
-    /* Generate write system log */
+    FILTER_SELF
     void *event_data;
     struct write_data_t *write_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
-
+    
+    /* Reserve space in event queue */
     event_data = reserve_in_event_queue(&rb, sizeof(struct write_data_t), 0);
     if(!event_data)
         return 0;
-    write_data = (struct write_data_t *)init_event(event_data, SYSCALL_WRITE);
+    /* Tag the entry with the syscall_id */
+    write_data = (struct write_data_t *)init_event_header(event_data, SYSCALL_WRITE);
     
     /* Task and event context */
-    write_data->ts =  bpf_ktime_get_boot_ns(); // time in nanoseconds when syscall was called
-    write_data->syscall_id = SYSCALL_WRITE; // syscall id
-    write_data->pid = (tgid_pid >> 32); // process id
-    write_data->tgid = tgid_pid;
-    write_data->ppid = BPF_CORE_READ(curr, real_parent, tgid); // parent process id
-    bpf_get_current_comm(&write_data->comm, sizeof(write_data->comm)); // command of the task that made teh syscall
+    init_event(&write_data->event, curr, SYSCALL_WRITE);
+
+    /* Lookup in args map */
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
-    write_data->fd = (unsigned int)ctx->args[0];
-    write_data->buf = (char *)ctx->args[1];
-    write_data->count = (unsigned int)ctx->args[2];
+    if(ctx_args != NULL && write_data != NULL)
+    {
+        write_data->fd = (unsigned int)ctx_args->args[0];
+        write_data->buf = (char *)ctx_args->args[1];
+        write_data->count = (unsigned int)ctx_args->args[2];
+        write_data->retval = ctx->ret;
+    }
 
     /* Submit to event queue */
     bpf_ringbuf_submit(event_data, 0);
 
-    unsigned int fd = (unsigned int)ctx->args[0];
+    if(ctx_args == NULL)
+        return 0;
+    
+    unsigned int fd = (unsigned int)ctx_args->args[0];
+
+    /* Generate write augmented application log */
     /* Write to a log file */
     if(check_log_filepath(fd)) {
         int i = 0;
         int c = 5;
-        int cnt = (int)ctx->args[2];
-        char *buf = (char *)ctx->args[1];
+        int cnt = (int)ctx_args->args[2];
+        char *buf = (char *)ctx_args->args[1];
         while(c--) {
-            /* Reserve sizeof(struct applog_data_t) storage in the ringbuffer */
-            void *event_data;
+            /* Reserve sizeof(struct applog_data_t) + sizeof(u32) storage in the ringbuffer */
+            FILTER_SELF
+    void *event_data;
             struct applog_data_t *applog_data;
 
             event_data = reserve_in_event_queue(&rb, sizeof(struct applog_data_t), 0);
             if(!event_data)
                 return 0;
-            applog_data = (struct applog_data_t *)init_event(event_data, APP);
-            
-            /* Populate all fields in struct */
-            applog_data->ts = bpf_ktime_get_boot_ns();
-            applog_data->pid = tgid_pid;
-            applog_data->tgid = (tgid_pid >> 32);
-            applog_data->ppid = BPF_CORE_READ(curr, real_parent, tgid);
-            bpf_get_current_comm(&applog_data->comm, sizeof(applog_data->comm));
-            applog_data->fd = fd;
-            bpf_core_read_user_str(applog_data->msg, MAX_MSG_LEN, (void *)buf);
+            applog_data = (struct applog_data_t *)init_event_header(event_data, APP);
+
+            /* Task and event context */
+            init_event(&applog_data->event, curr, APP);
+
+            /* Other data */
+            applog_data->fd = fd; // File descriptor
+            bpf_core_read_user_str(applog_data->msg, MAX_MSG_LEN, (void *)buf); // Log message string
 
             /* Successfully submit it to user-space for post-processing */
             bpf_ringbuf_submit(event_data, 0);
@@ -227,198 +230,621 @@ int handle_write(struct trace_event_raw_sys_enter *ctx)
             buf = buf + MAX_MSG_LEN - 1;
         }
     }
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
 	return 0;
 }
 
-SEC("tp/syscalls/sys_enter_open")
-int handle_open(struct trace_event_raw_sys_enter *ctx)
+SEC("tp/syscalls/sys_exit_open")
+int handle_open_exit(struct trace_event_raw_sys_exit *ctx)
 {
     /* 
     ctx->args[0] : const char *filename
     ctx->args[1] : int flags
     ctx->args[2] : umode_t mode
     */
+    FILTER_SELF
     void *event_data;
     struct open_data_t *open_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
-    u64 tgid_pid = bpf_get_current_pid_tgid();
-    u32 tgid = tgid_pid >> 32;
 
     /* Reserve space in event queue */
     event_data = reserve_in_event_queue(&rb, sizeof(struct open_data_t), 0);
     if(!event_data)
         return 0;
     /* Tag the entry with the syscall_id */
-    open_data = (struct open_data_t *)init_event(event_data, SYSCALL_OPEN);
+    open_data = (struct open_data_t *)init_event_header(event_data, SYSCALL_OPEN);
     
     /* Task and event context */
-    open_data->ts =  bpf_ktime_get_boot_ns(); // time in nanoseconds when syscall was called
-    open_data->syscall_id = SYSCALL_OPEN; // syscall id
-    open_data->pid = (tgid_pid >> 32); // process id
-    open_data->tgid = tgid_pid;
-    open_data->ppid = BPF_CORE_READ(curr, real_parent, tgid); // parent process id
-    bpf_get_current_comm(&open_data->comm, sizeof(open_data->comm)); // command of the task that made the syscall
+    init_event(&open_data->event, curr, SYSCALL_OPEN);
+
+    /* Lookup in args map */
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
-    bpf_core_read_user_str(open_data->filename, sizeof(open_data->filename), (char *)ctx->args[0]);
-    open_data->flags = (int)ctx->args[1];
-    open_data->mode = (unsigned short)ctx->args[2];
-    
+    if(ctx_args != NULL && open_data != NULL)
+    {
+        bpf_probe_read_str(open_data->filename, sizeof(open_data->filename), (char *)ctx_args->args[0]);
+        open_data->flags = (int)ctx_args->args[1];
+        open_data->mode = (unsigned short)ctx_args->args[2];
+        open_data->retval = ctx->ret;
+    }
+
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
     /* Submit to event queue */
     bpf_ringbuf_submit(event_data, 0);
     return 0;
 }
 
-SEC("tp/syscalls/sys_enter_close")
-int handle_close(struct trace_event_raw_sys_enter *ctx)
+SEC("tp/syscalls/sys_exit_close")
+int handle_close_exit(struct trace_event_raw_sys_exit *ctx)
 {
     /* 
     ctx->args[0] : unsigned int fd
     */
+    FILTER_SELF
     void *event_data;
     struct close_data_t *close_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
-    u64 tgid_pid = bpf_get_current_pid_tgid();
-    u32 tgid = tgid_pid >> 32;
 
     /* Reserve space in event queue */
     event_data = reserve_in_event_queue(&rb, sizeof(struct close_data_t), 0);
     if(!event_data)
         return 0;
     /* Tag the entry with the syscall_id */
-    close_data = (struct close_data_t *)init_event(event_data, SYSCALL_CLOSE);
+    close_data = (struct close_data_t *)init_event_header(event_data, SYSCALL_CLOSE);
     
     /* Task and event context */
-    close_data->ts =  bpf_ktime_get_boot_ns(); // time in nanoseconds when syscall was called
-    close_data->syscall_id = SYSCALL_CLOSE; // syscall id
-    close_data->pid = (tgid_pid >> 32); // process id
-    close_data->tgid = tgid_pid;
-    close_data->ppid = BPF_CORE_READ(curr, real_parent, tgid); // parent process id
-    bpf_get_current_comm(&close_data->comm, sizeof(close_data->comm)); // command of the task that made the syscall
+    init_event(&close_data->event, curr, SYSCALL_CLOSE);
+
+    /* Lookup in args map */
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
-    close_data->fd = (unsigned int)ctx->args[0];
+    if(ctx_args != NULL && close_data != NULL)
+    {
+        close_data->fd = (unsigned int)ctx_args->args[0];
+        close_data->retval = ctx->ret;
+    }
     
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
+    /* Submit to event queue */
+    bpf_ringbuf_submit(event_data, 0);
+    return 0;
+}
+
+SEC("tp/syscalls/sys_exit_dup")
+int handle_dup_exit(struct trace_event_raw_sys_exit *ctx)
+{
+    /* 
+    ctx->args[0] : unsigned int fildes
+    */
+    FILTER_SELF
+    void *event_data;
+    struct dup_data_t *dup_data;
+    struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
+
+    /* Reserve space in event queue */
+    event_data = reserve_in_event_queue(&rb, sizeof(struct dup_data_t), 0);
+    if(!event_data)
+        return 0;
+    /* Tag the entry with the syscall_id */
+    dup_data = (struct dup_data_t *)init_event_header(event_data, SYSCALL_DUP);
+    
+    /* Task and event context */
+    init_event(&dup_data->event, curr, SYSCALL_DUP);
+
+     /* Lookup in args map */
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+
+    /* Arguments */
+    if(ctx_args != NULL && dup_data != NULL)
+    {
+        dup_data->fildes = (unsigned int)ctx_args->args[0];
+        dup_data->retval = ctx->ret;
+    }
+    
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
+    /* Submit to event queue */
+    bpf_ringbuf_submit(event_data, 0);
+    return 0;
+}
+
+SEC("tp/syscalls/sys_exit_dup2")
+int handle_dup2_exit(struct trace_event_raw_sys_exit *ctx)
+{
+    /* 
+    ctx->args[0] : unsigned int oldfd
+    ctx->args[1] : unsigned int newfd
+    */
+    FILTER_SELF
+    void *event_data;
+    struct dup2_data_t *dup2_data;
+    struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
+
+    /* Reserve space in event queue */
+    event_data = reserve_in_event_queue(&rb, sizeof(struct dup2_data_t), 0);
+    if(!event_data)
+        return 0;
+    /* Tag the entry with the syscall_id */
+    dup2_data = (struct dup2_data_t *)init_event_header(event_data, SYSCALL_DUP2);
+    
+    /* Task and event context */
+    init_event(&dup2_data->event, curr, SYSCALL_DUP2);
+
+    /* Lookup in args map */
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+
+    /* Arguments */
+    if(ctx_args != NULL && dup2_data != NULL)
+    {
+        dup2_data->oldfd = (unsigned int)ctx_args->args[0];
+        dup2_data->newfd = (unsigned int)ctx_args->args[1];
+        dup2_data->retval = ctx->ret;
+    }
+    
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
+    /* Submit to event queue */
+    bpf_ringbuf_submit(event_data, 0);
+    return 0;
+}
+
+SEC("tp/syscalls/sys_exit_connect")
+int handle_connect_exit(struct trace_event_raw_sys_exit *ctx)
+{
+    /* 
+    ctx->args[0] : int fd
+    ctx->args[1] : struct sockaddr *uservaddr
+    ctx->args[2] : int addrlen
+    */
+    FILTER_SELF
+    void *event_data;
+    struct connect_data_t *connect_data;
+    struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
+
+    /* Reserve space in event queue */
+    event_data = reserve_in_event_queue(&rb, sizeof(struct connect_data_t), 0);
+    if(!event_data)
+        return 0;
+    /* Tag the entry with the syscall_id */
+    connect_data = (struct connect_data_t *)init_event_header(event_data, SYSCALL_CONNECT);
+    
+    /* Task and event context */
+    init_event(&connect_data->event, curr, SYSCALL_CONNECT);
+
+    /* Lookup in args map */
+    
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+
+    /* Arguments */
+    if(ctx_args != NULL && connect_data != NULL)
+    {
+        connect_data->fd = (int)ctx_args->args[0];
+        connect_data->uservaddr = (void *)ctx_args->args[1];
+        connect_data->addrlen = (int)ctx_args->args[2];
+        connect_data->retval = ctx->ret;
+    }
+    
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
+    /* Submit to event queue */
+    bpf_ringbuf_submit(event_data, 0);
+    return 0;
+}
+
+SEC("tp/syscalls/sys_exit_accept")
+int handle_accept_exit(struct trace_event_raw_sys_exit *ctx)
+{
+    /* 
+    ctx->args[0] : int fd
+    ctx->args[1] : struct sockaddr *upeer_sockaddr
+    ctx->args[2] : int upeer_addrlen
+    */
+    FILTER_SELF
+    void *event_data;
+    struct accept_data_t *accept_data;
+    struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
+
+    /* Reserve space in event queue */
+    event_data = reserve_in_event_queue(&rb, sizeof(struct accept_data_t), 0);
+    if(!event_data)
+        return 0;
+    /* Tag the entry with the syscall_id */
+    accept_data = (struct accept_data_t *)init_event_header(event_data, SYSCALL_ACCEPT);
+    
+    /* Task and event context */
+    init_event(&accept_data->event, curr, SYSCALL_ACCEPT);
+
+    /* Lookup in args map */
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+
+    /* Arguments */
+    if(ctx_args != NULL && event_data != NULL)
+    {
+        accept_data->fd = (int)ctx_args->args[0];
+        accept_data->upeer_sockaddr = (void *)ctx_args->args[1];
+        accept_data->upeer_addrlen = (int *)ctx_args->args[2];
+        accept_data->retval = ctx->ret;
+    }
+    
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
+    /* Submit to event queue */
+    bpf_ringbuf_submit(event_data, 0);
+    return 0;
+}
+
+SEC("tp/syscalls/sys_exit_bind")
+int handle_bind_exit(struct trace_event_raw_sys_exit *ctx)
+{
+    /* 
+    ctx->args[0] : int fd
+    ctx->args[1] : struct sockaddr *umyaddr
+    ctx->args[2] : int addrlen
+    */
+    FILTER_SELF
+    void *event_data;
+    struct bind_data_t *bind_data;
+    struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
+
+    /* Reserve space in event queue */
+    event_data = reserve_in_event_queue(&rb, sizeof(struct bind_data_t), 0);
+    if(!event_data)
+        return 0;
+    /* Tag the entry with the syscall_id */
+    bind_data = (struct bind_data_t *)init_event_header(event_data, SYSCALL_BIND);
+    
+    /* Task and event context */
+    init_event(&bind_data->event, curr, SYSCALL_BIND);
+
+    /* Lookup in args map */
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+
+    /* Arguments */
+    if(ctx_args != NULL && bind_data != NULL)
+    {
+        bind_data->fd = (int)ctx_args->args[0];
+        bind_data->umyaddr = (void *)ctx_args->args[1];
+        bind_data->addrlen = (int)ctx_args->args[2];
+    }
+    
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
+    /* Submit to event queue */
+    bpf_ringbuf_submit(event_data, 0);
+    return 0;
+}
+
+
+SEC("raw_tracepoint/sys_enter")
+int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
+{
+    FILTER_SELF
+
+    int syscall_id = ctx->args[1];
+    struct args_t ctx_args = {};
+    struct pt_regs *regs = (struct pt_regs *)ctx->args[0];
+    switch(syscall_id)
+    {
+        case SYSCALL_WRITE:
+        case SYSCALL_READ:
+		case SYSCALL_OPEN:
+		case SYSCALL_CLOSE:
+		case SYSCALL_DUP:
+		case SYSCALL_DUP2:
+		case SYSCALL_CONNECT:
+		case SYSCALL_ACCEPT:
+		case SYSCALL_BIND:
+		case SYSCALL_CLONE:
+		case SYSCALL_FORK:
+		case SYSCALL_VFORK:
+		case SYSCALL_EXECVE:
+		case SYSCALL_EXIT:
+		case SYSCALL_EXIT_GROUP:
+		case SYSCALL_OPENAT:
+		case SYSCALL_UNLINKAT:
+		case SYSCALL_ACCEPT4:
+		case SYSCALL_DUP3:
+            /* Copy system call arguments to program stack */
+            ctx_args.args[0] = PT_REGS_PARM1_CORE(regs);
+            ctx_args.args[1] = PT_REGS_PARM2_CORE(regs);
+            ctx_args.args[2] = PT_REGS_PARM3_CORE(regs);
+            ctx_args.args[3] = PT_REGS_PARM4_CORE(regs);
+            ctx_args.args[4] = PT_REGS_PARM5_CORE(regs);
+
+            u32 host_pid = (bpf_get_current_pid_tgid() >> 32);    
+            /*Add arguments to map*/
+            bpf_map_update_elem(&pid_args_map, &host_pid, &ctx_args, 0);
+            break;
+		default:
+			return 0;
+    }
+    return 0;
+}
+
+
+SEC("tp/syscalls/sys_exit_clone")
+int handle_clone_exit(struct trace_event_raw_sys_exit *ctx)
+{
+    FILTER_SELF
+    void *event_data;
+    struct clone_data_t *clone_data;
+
+    struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
+
+    /* Reserve space in event queue */
+    event_data = reserve_in_event_queue(&rb, sizeof(struct clone_data_t), 0);
+    if(!event_data)
+        return 0;
+    /* Tag the entry with the syscall_id */
+    clone_data = (struct clone_data_t *)init_event_header(event_data, SYSCALL_CLONE);
+    
+    /* Task and event context */
+    init_event(&clone_data->event, curr, SYSCALL_CLONE);
+
+
+    /* Lookup in args map */
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+
+    /* Arguments */
+    if(ctx_args != NULL && clone_data != NULL)
+    {
+        clone_data->flags = (unsigned long)ctx_args->args[0];
+        clone_data->newsp = (void *)ctx_args->args[1];
+        clone_data->parent_tid = (int *)ctx_args->args[2];
+        clone_data->child_tid = (int *)ctx_args->args[3];
+        clone_data->tls = (unsigned long)ctx_args->args[4];
+        clone_data->retval = ctx->ret;
+    }
+
+    /* Update (pid, executable name) map. */
+    struct copy_str ename = {};
+    u32 ppid = clone_data->event.task.ppid;
+    struct copy_str *parent_ename = bpf_map_lookup_elem(&pid_exec_map, &ppid);
+    bpf_probe_read_str(ename.exe_name, sizeof(ename.exe_name), parent_ename->exe_name );
+    bpf_map_update_elem(&pid_exec_map, &host_pid, &ename, 0);
+
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
+    /* Submit to event queue */
+    bpf_ringbuf_submit(event_data, 0);
+    return 0;
+}
+
+
+SEC("tp/syscalls/sys_exit_fork")
+int handle_fork_exit(struct trace_event_raw_sys_exit *ctx)
+{
+    FILTER_SELF
+    void *event_data;
+    struct fork_data_t *fork_data;
+    struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
+
+    /* Reserve space in event queue */
+    event_data = reserve_in_event_queue(&rb, sizeof(struct fork_data_t), 0);
+    if(!event_data)
+        return 0;
+    /* Tag the entry with the syscall_id */
+    fork_data = (struct fork_data_t *)init_event_header(event_data, SYSCALL_FORK);
+    
+    /* Task and event context */
+    init_event(&fork_data->event, curr, SYSCALL_FORK);
+
+    /* Lookup in args map */
+    
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    
+    if(ctx_args != NULL && fork_data != NULL)
+    {
+        fork_data->retval = ctx->ret;
+    }
+
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
+    /* Submit to event queue */
+    bpf_ringbuf_submit(event_data, 0);
+    return 0;
+}
+
+SEC("tp/syscalls/sys_exit_vfork")
+int handle_vfork_exit(struct trace_event_raw_sys_exit *ctx)
+{
+    FILTER_SELF
+    void *event_data;
+    struct vfork_data_t *vfork_data;
+    struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
+
+    /* Reserve space in event queue */
+    event_data = reserve_in_event_queue(&rb, sizeof(struct vfork_data_t), 0);
+    if(!event_data)
+        return 0;
+    /* Tag the entry with the syscall_id */
+    vfork_data = (struct vfork_data_t *)init_event_header(event_data, SYSCALL_VFORK);
+    
+    /* Task and event context */
+    init_event(&vfork_data->event, curr, SYSCALL_VFORK);
+
+    /* Lookup in args map */
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+
+    /* Arguments */
+    if(ctx_args != NULL && vfork_data != NULL)
+    {
+        vfork_data->retval = ctx->ret;
+    }
+    
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
     /* Submit to event queue */
     bpf_ringbuf_submit(event_data, 0);
     return 0;
 }
 
 SEC("tp/syscalls/sys_enter_execve")
-int handle_execve(struct trace_event_raw_sys_enter *ctx)
+int handle_execve_enter(struct trace_event_raw_sys_enter *ctx)
+{
+    u64 tgid_pid = bpf_get_current_pid_tgid();
+    u32 host_pid = (tgid_pid >> 32);
+    /* Update (pid, name of executable) map */
+    struct copy_str ename = {};
+    bpf_probe_read_user_str(ename.exe_name, sizeof(ename.exe_name), (char *)ctx->args[0]);
+    bpf_map_update_elem(&pid_exec_map, &host_pid, &ename, 0);
+    return 0;
+}
+
+SEC("tp/syscalls/sys_exit_execve")
+int handle_execve_exit(struct trace_event_raw_sys_exit *ctx)
 {
     /* 
     ctx->args[0] : const char *filename
     ctx->args[1] : const char *__argv
     ctx->args[2] : const char *__envp
     */
+    FILTER_SELF
     void *event_data;
     struct execve_data_t *execve_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
     u64 tgid_pid = bpf_get_current_pid_tgid();
-    u32 tgid = tgid_pid >> 32;
+    u32 host_pid = (tgid_pid >> 32);
 
     /* Reserve space in event queue */
     event_data = reserve_in_event_queue(&rb, sizeof(struct execve_data_t), 0);
     if(!event_data)
         return 0;
     /* Tag the entry with the syscall_id */
-    execve_data = (struct execve_data_t *)init_event(event_data, SYSCALL_EXECVE);
+    execve_data = (struct execve_data_t *)init_event_header(event_data, SYSCALL_EXECVE);
     
     /* Task and event context */
-    execve_data->ts =  bpf_ktime_get_boot_ns(); // time in nanoseconds when syscall was called
-    execve_data->syscall_id = SYSCALL_EXECVE; // syscall id
-    execve_data->pid = (tgid_pid >> 32); // process id
-    execve_data->tgid = tgid_pid;
-    execve_data->ppid = BPF_CORE_READ(curr, real_parent, tgid); // parent process id
-    bpf_get_current_comm(&execve_data->comm, sizeof(execve_data->comm)); // command of the task that made the syscall
+    init_event(&execve_data->event, curr, SYSCALL_EXECVE);
 
-    /* Arguments */
-    bpf_core_read_user_str(execve_data->filename, sizeof(execve_data->filename), (char *)ctx->args[0]);
+    /* Lookup in args map */
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
     
-    /* Update (pid, name of executable) map */
-    struct copy_str ename = {};
-    bpf_core_read_user_str(ename.exe_name, sizeof(ename.exe_name), (char *)ctx->args[0]);
-    bpf_map_update_elem(&pid_exec_mapper, &tgid, &ename, 0);
+    if(ctx_args != NULL && execve_data != NULL)
+    {
+        /* Arguments */
+        bpf_probe_read_user_str(execve_data->filename, sizeof(execve_data->filename), (char *)ctx_args->args[0]);
+        execve_data->retval = ctx->ret;
+    }
     
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
     /* Submit to event queue */
     bpf_ringbuf_submit(event_data, 0);
     return 0;
 
 }
 
-SEC("tp/syscalls/sys_enter_exit")
-int handle_exit(struct trace_event_raw_sys_enter *ctx)
+SEC("tp/syscalls/sys_exit_exit")
+int handle_exit_exit(struct trace_event_raw_sys_exit *ctx)
 {
     /* 
     cts->args[0] : int error_code
     */
+    FILTER_SELF
     void *event_data;
     struct exit_data_t *exit_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
-    u64 tgid_pid = bpf_get_current_pid_tgid();
-    u32 tgid = tgid_pid >> 32;
 
     /* Reserve space in event queue */
     event_data = reserve_in_event_queue(&rb, sizeof(struct exit_data_t), 0);
     if(!event_data)
         return 0;
     /* Tag the entry with the syscall_id */
-    exit_data = (struct exit_data_t *)init_event(event_data, SYSCALL_EXIT);
+    exit_data = (struct exit_data_t *)init_event_header(event_data, SYSCALL_EXIT);
     
     /* Task and event context */
-    exit_data->ts =  bpf_ktime_get_boot_ns(); // time in nanoseconds when syscall was called
-    exit_data->syscall_id = SYSCALL_EXIT; // syscall id
-    exit_data->pid = (tgid_pid >> 32); // process id
-    exit_data->tgid = tgid_pid;
-    exit_data->ppid = BPF_CORE_READ(curr, real_parent, tgid); // parent process id
-    bpf_get_current_comm(&exit_data->comm, sizeof(exit_data->comm)); // command of the task that made the syscall
+    init_event(&exit_data->event, curr, SYSCALL_EXIT);
+
+    /* Lookup in args map */
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
-    exit_data->error_code = (int)ctx->args[0];
-    
+    if(ctx_args != NULL && exit_data != NULL)
+    {
+        exit_data->error_code = (int)ctx_args->args[0];
+        exit_data->retval = ctx->ret;
+    }
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
     /* Submit to event queue */
     bpf_ringbuf_submit(event_data, 0);
     return 0;
 }
 
-SEC("tp/syscalls/sys_enter_exit_group")
-int handle_exit_group(struct trace_event_raw_sys_enter *ctx)
+SEC("tp/syscalls/sys_exit_exit_group")
+int handle_exit_group(struct trace_event_raw_sys_exit *ctx)
 {
     /* 
     cts->args[0] : int error_code
     */
+    FILTER_SELF
     void *event_data;
     struct exit_group_data_t *exit_group_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
-    u64 tgid_pid = bpf_get_current_pid_tgid();
-    u32 tgid = tgid_pid >> 32;
 
     /* Reserve space in event queue */
     event_data = reserve_in_event_queue(&rb, sizeof(struct exit_group_data_t), 0);
     if(!event_data)
         return 0;
     /* Tag the entry with the syscall_id */
-    exit_group_data = (struct exit_group_data_t *)init_event(event_data, SYSCALL_EXIT_GROUP);
+    exit_group_data = (struct exit_group_data_t *)init_event_header(event_data, SYSCALL_EXIT_GROUP);
     
     /* Task and event context */
-    exit_group_data->ts =  bpf_ktime_get_boot_ns(); // time in nanoseconds when syscall was called
-    exit_group_data->syscall_id = SYSCALL_EXIT_GROUP; // syscall id
-    exit_group_data->pid = (tgid_pid >> 32); // process id
-    exit_group_data->tgid = tgid_pid;
-    exit_group_data->ppid = BPF_CORE_READ(curr, real_parent, tgid); // parent process id
-    bpf_get_current_comm(&exit_group_data->comm, sizeof(exit_group_data->comm)); // command of the task that made the syscall
+    init_event(&exit_group_data->event, curr, SYSCALL_EXIT_GROUP);
+
+    /* Lookup in args map */
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
-    exit_group_data->error_code = (int)ctx->args[0];
+    if(ctx_args != NULL && exit_group_data != NULL)
+    {
+        exit_group_data->error_code = (int)ctx_args->args[0];
+        exit_group_data->retval = ctx->ret;
+    }
     
+
+    /* Clear pid_exec_map */
+    bpf_map_delete_elem(&pid_exec_map, &host_pid);
+
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
     /* Submit to event queue */
     bpf_ringbuf_submit(event_data, 0);
     return 0;
 }
 
-SEC("tp/syscalls/sys_enter_openat")
-int handle_openat(struct trace_event_raw_sys_enter *ctx)
+SEC("tp/syscalls/sys_exit_openat")
+int handle_openat_exit(struct trace_event_raw_sys_exit *ctx)
 {
     /* 
     cts->args[0] : int dfd
@@ -426,32 +852,177 @@ int handle_openat(struct trace_event_raw_sys_enter *ctx)
     ctx->args[2] : int flags
     ctx->args[3] : umode_t mode
     */
+    FILTER_SELF
     void *event_data;
     struct openat_data_t *openat_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
-    u64 tgid_pid = bpf_get_current_pid_tgid();
-    u32 tgid = tgid_pid >> 32;
 
     /* Reserve space in event queue */
     event_data = reserve_in_event_queue(&rb, sizeof(struct openat_data_t), 0);
     if(!event_data)
         return 0;
     /* Tag the entry with the syscall_id */
-    openat_data = (struct openat_data_t *)init_event(event_data, SYSCALL_OPENAT);
+    openat_data = (struct openat_data_t *)init_event_header(event_data, SYSCALL_OPENAT);
     
     /* Task and event context */
-    openat_data->ts =  bpf_ktime_get_boot_ns(); // time in nanoseconds when syscall was called
-    openat_data->syscall_id = SYSCALL_OPENAT; // syscall id
-    openat_data->pid = (tgid_pid >> 32); // process id
-    openat_data->tgid = tgid_pid;
-    openat_data->ppid = BPF_CORE_READ(curr, real_parent, tgid); // parent process id
-    bpf_get_current_comm(&openat_data->comm, sizeof(openat_data->comm)); // command of the task that made the syscall
+    init_event(&openat_data->event, curr, SYSCALL_OPENAT);
+
+    /* Lookup in args map */
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
-    openat_data->dfd = (int)ctx->args[0];
-    bpf_core_read_user_str(openat_data->filename, sizeof(openat_data->filename), (char *)ctx->args[1]);
-    openat_data->flags = (int)ctx->args[2];
-    openat_data->mode = (unsigned short)ctx->args[3];
+    if(ctx_args != NULL && openat_data != NULL)
+    {
+        openat_data->dfd = (int)ctx_args->args[0];
+        bpf_probe_read_user_str(openat_data->filename, sizeof(openat_data->filename), (char *)ctx_args->args[1]);
+        openat_data->flags = (int)ctx_args->args[2];
+        openat_data->mode = (unsigned short)ctx_args->args[3];
+        openat_data->retval = ctx->ret;
+
+        /* Update (pid, file opened) map */
+        // struct copy_str ename = {};
+        // bpf_probe_read_user_str(ename.exe_name, sizeof(ename.exe_name), (char *)ctx_args->args[0]);
+        // bpf_map_update_elem(&pid_exec_map, &host_pid, &ename, 0);
+    }
+    
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
+    /* Submit to event queue */
+    bpf_ringbuf_submit(event_data, 0);
+    return 0;
+}
+
+SEC("tp/syscalls/sys_exit_unlinkat")
+int handle_unlinkat_exit(struct trace_event_raw_sys_exit *ctx)
+{
+    /* 
+    cts->args[0] : int dfd
+    ctx->args[1] : const char *pathname
+    ctx->args[2] : int flag
+    */
+    FILTER_SELF
+    void *event_data;
+    struct unlinkat_data_t *unlinkat_data;
+    struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
+
+    /* Reserve space in event queue */
+    event_data = reserve_in_event_queue(&rb, sizeof(struct unlinkat_data_t), 0);
+    if(!event_data)
+        return 0;
+    /* Tag the entry with the syscall_id */
+    unlinkat_data = (struct unlinkat_data_t *)init_event_header(event_data, SYSCALL_UNLINKAT);
+    
+    /* Task and event context */
+    init_event(&unlinkat_data->event, curr, SYSCALL_UNLINKAT);
+
+    /* Lookup in args map */
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+
+    /* Arguments */
+    if(ctx_args != NULL && unlinkat_data != NULL)
+    {
+        unlinkat_data->dfd = (int)ctx_args->args[0];
+        bpf_probe_read_user_str(unlinkat_data->pathname, sizeof(unlinkat_data->pathname), (char *)ctx_args->args[1]);
+        unlinkat_data->flag = (int)ctx_args->args[2];
+        unlinkat_data->retval = ctx->ret;
+    }
+    
+     /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
+    /* Submit to event queue */
+    bpf_ringbuf_submit(event_data, 0);
+    return 0;
+}
+
+SEC("tp/syscalls/sys_exit_accept4")
+int handle_accept4_exit(struct trace_event_raw_sys_exit *ctx)
+{
+    /* 
+    ctx->args[0] : int fd
+    ctx->args[1] : struct sockaddr *upeer_sockaddr
+    ctx->args[2] : int upeer_addrlen
+    */
+    FILTER_SELF
+    void *event_data;
+    struct accept4_data_t *accept4_data;
+    struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
+
+    /* Reserve space in event queue */
+    event_data = reserve_in_event_queue(&rb, sizeof(struct accept4_data_t), 0);
+    if(!event_data)
+        return 0;
+    /* Tag the entry with the syscall_id */
+    accept4_data = (struct accept4_data_t *)init_event_header(event_data, SYSCALL_ACCEPT4);
+    
+    /* Task and event context */
+    init_event(&accept4_data->event, curr, SYSCALL_ACCEPT4);
+
+    /* Lookup in args map */
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+
+    /* Arguments */
+    if(ctx_args != NULL && accept4_data != NULL)
+    {
+        accept4_data->fd = (int)ctx_args->args[0];
+        accept4_data->upeer_sockaddr = (void *)ctx_args->args[1];
+        accept4_data->upeer_addrlen = (int *)ctx_args->args[2];
+        accept4_data->flags = (int)ctx_args->args[3];
+        accept4_data->retval = ctx->ret;
+    }
+    
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
+
+
+    /* Submit to event queue */
+    bpf_ringbuf_submit(event_data, 0);
+    return 0;
+}
+
+SEC("tp/syscalls/sys_exit_dup3")
+int handle_dup3_exit(struct trace_event_raw_sys_exit *ctx)
+{
+    /* 
+    ctx->args[0] : unsigned int oldfd
+    ctx->args[1] : unsigned int newfd
+    ctx->args[2] : int flags
+    */
+    FILTER_SELF
+    void *event_data;
+    struct dup3_data_t *dup3_data;
+    struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
+
+    /* Reserve space in event queue */
+    event_data = reserve_in_event_queue(&rb, sizeof(struct dup3_data_t), 0);
+    if(!event_data)
+        return 0;
+    /* Tag the entry with the syscall_id */
+    dup3_data = (struct dup3_data_t *)init_event_header(event_data, SYSCALL_DUP3);
+    
+    /* Task and event context */
+    init_event(&dup3_data->event, curr, SYSCALL_DUP3);
+
+    /* Lookup in args map */
+    
+    u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
+    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+
+    /* Arguments */
+    if(ctx_args != NULL && dup3_data != NULL)
+    {
+        dup3_data->oldfd = (unsigned int)ctx_args->args[0];
+        dup3_data->newfd = (unsigned int)ctx_args->args[1];
+        dup3_data->flags = (int)ctx_args->args[2];
+        dup3_data->retval = ctx->ret;
+    }
+
+    /* Delete from args map */
+    bpf_map_delete_elem(&pid_args_map, &host_pid);
     
     /* Submit to event queue */
     bpf_ringbuf_submit(event_data, 0);

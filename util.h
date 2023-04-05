@@ -3,9 +3,48 @@
 
 #include "vmlinux.h"
 #include "writesnoop.h"
+#include "syscall.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+
+#define FILTER_SELF if(mypid == (bpf_get_current_pid_tgid() >> 32)) {return 0;}
+
+struct args_t
+{
+    long unsigned int args[6];
+};
+
+struct copy_str
+{
+    char exe_name[MAX_FILEPATH_SIZE];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_RINGBUF);
+	__uint(max_entries, 256 * 1024);
+} rb SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, u32);
+    __type(value, struct copy_str);
+    __uint(max_entries, 10240);
+} pid_exec_map SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, u32);
+    __type(value, struct args_t);
+    __uint(max_entries, 1024);
+} pid_args_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, u32);
+    __type(value, struct copy_str);
+    __uint(max_entries, 10240);
+} pid_open_files;
 
 static void *reserve_in_event_queue(void *ringbuf, u64 payload_size, u64 flags)
 {
@@ -15,44 +54,114 @@ static void *reserve_in_event_queue(void *ringbuf, u64 payload_size, u64 flags)
     return data;
 }
 
-// static void init_context(event_context_t *context, struct task_struct *task, u32 syscall_id)
-// {
-//     u64 id = bpf_get_current_pid_tgid();
-//     context->ts = bpf_ktime_get_boot_ns();
-//     context->syscall_id = syscall_id;
-//     context->task.host_tid = id;
-//     context->task.host_pid = id >> 32;
-//     context->task.host_ppid = get_task_ppid(task);
-//     context->task.tid = get_task_ns_pid(task);
-//     context->task.pid = get_task_ns_tgid(task);
-//     context->task.ppid = get_task_ns_ppid(task);
-// }
+static __always_inline u32 get_task_ppid(struct task_struct *task)
+{
+    return BPF_CORE_READ(task, real_parent, tgid);
+}
 
-static void *init_event(void *data, u32 syscall_id)
+static __always_inline u32 get_mnt_ns_id(struct nsproxy *ns)
+{
+    return BPF_CORE_READ(ns, mnt_ns, ns.inum);
+}
+
+static __always_inline u32 get_pid_ns_for_children_id(struct nsproxy *ns)
+{
+    return BPF_CORE_READ(ns, pid_ns_for_children, ns.inum);
+}
+
+static __always_inline u32 get_uts_ns_id(struct nsproxy *ns)
+{
+    return BPF_CORE_READ(ns, uts_ns, ns.inum);
+}
+
+static __always_inline u32 get_ipc_ns_id(struct nsproxy *ns)
+{
+    return BPF_CORE_READ(ns, ipc_ns, ns.inum);
+}
+
+static __always_inline u32 get_net_ns_id(struct nsproxy *ns)
+{
+    return BPF_CORE_READ(ns, net_ns, ns.inum);
+}
+
+static __always_inline u32 get_cgroup_ns_id(struct nsproxy *ns)
+{
+    return BPF_CORE_READ(ns, cgroup_ns, ns.inum);
+}
+
+static __always_inline u32 get_task_pid_vnr(struct task_struct *task)
+{
+    unsigned int level = 0;
+    struct pid *pid = NULL;
+
+    pid = BPF_CORE_READ(task, thread_pid);
+    level = BPF_CORE_READ(task, thread_pid, level);
+    struct upid *numbers = NULL;
+
+    return BPF_CORE_READ(pid, numbers[level].nr);
+}
+
+static __always_inline u32 get_task_ns_pid(struct task_struct *task)
+{
+    return get_task_pid_vnr(task);
+}
+
+static __always_inline u32 get_task_ns_tgid(struct task_struct *task)
+{
+    struct task_struct *group_leader = BPF_CORE_READ(task, group_leader);
+    return get_task_pid_vnr(group_leader);
+}
+
+static __always_inline u32 get_task_ns_ppid(struct task_struct *task)
+{
+    struct task_struct *real_parent = BPF_CORE_READ(task, real_parent);
+    return get_task_pid_vnr(real_parent);
+}
+
+static __always_inline u32 get_task_mnt_ns_id(struct task_struct *task)
+{
+    return get_mnt_ns_id(BPF_CORE_READ(task, nsproxy));
+}
+
+static __always_inline u32 get_task_pid_ns_id(struct task_struct *task)
+{
+    unsigned int level = 0;
+    struct pid *pid = NULL;
+
+    pid = BPF_CORE_READ(task, thread_pid);
+    level = BPF_CORE_READ(task, thread_pid, level);
+    struct upid *numbers = NULL;
+
+    return BPF_CORE_READ(pid, numbers[level].ns, ns.inum);
+}
+
+static void init_event(event_context_t *event_ctx, struct task_struct *task, u32 syscall_id)
+{
+    u64 id = bpf_get_current_pid_tgid();
+    u32 host_pid = (id >> 32);
+    event_ctx->ts = bpf_ktime_get_boot_ns();
+    event_ctx->syscall_id = syscall_id;
+    event_ctx->task.host_tid = id;
+    event_ctx->task.host_pid = (id >> 32);
+    event_ctx->task.host_ppid = get_task_ppid(task);
+    event_ctx->task.tid = get_task_ns_pid(task);
+    event_ctx->task.pid = get_task_ns_tgid(task);
+    event_ctx->task.ppid = get_task_ns_ppid(task);
+    event_ctx->task.cgroup_id = bpf_get_current_cgroup_id();
+    event_ctx->task.mntns_id = get_task_mnt_ns_id(task);
+    event_ctx->task.pidns_id = get_task_pid_ns_id(task);
+    bpf_get_current_comm(event_ctx->task.comm, sizeof(event_ctx->task.comm));
+    struct copy_str *exe = (struct copy_str *)bpf_map_lookup_elem(&pid_exec_map, &host_pid);
+    bpf_probe_read_str(event_ctx->task.exe_path, sizeof(event_ctx->task.exe_path), exe->exe_name);
+    // task->cgroups->dfl_cgrp->kn->id;
+    //  u64 cgroup_id = task_cgroup(task)->css.cgroup->kn->id;
+}
+
+static void *init_event_header(void *data, u32 syscall_id)
 {
     *((u32 *)data) = syscall_id;
     data = data + sizeof(u32);
     return data;
 }
-
-// static __always_inline u32 get_task_ppid(struct task_struct *task)
-// {
-//     return BPF_CORE_READ(task, real_parent, tgid);
-// }
-
-// static __always_inline u64 get_task_start_time(struct task_struct *task)
-// {
-//     return READ_KERN(task->start_time);
-// }
-
-// static __always_inline u32 get_task_host_pid(struct task_struct *task)
-// {
-//     return READ_KERN(task->pid);
-// }
-
-// static __always_inline u32 get_task_host_tgid(struct task_struct *task)
-// {
-//     return READ_KERN(task->tgid);
-// }
 
 #endif /* __UTIL_H */

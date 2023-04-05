@@ -8,6 +8,7 @@
 #define MAX_FILEPATH_SIZE 100
 #define MAX_FILE_AND_DIR_NAME_SIZE 10
 #define MAX_DIR_LEVELS_ALLOWED 6
+#define MAX_EXECVE_ARGS 20
 #define SYSCALL_NAME_MAXLEN 20
 
 typedef signed char __s8;
@@ -27,30 +28,29 @@ typedef __u32 u32;
 typedef __s64 s64;
 typedef __u64 u64;
 
-// typedef struct task_context {
-//     u32 pid;                    /* PID as in the userspace term */
-//     u32 tid;                    /* TID as in the userspace term */
-//     u32 ppid;                   /* Parent PID as in the userspace term */
-//     u32 host_pid;               /* PID in host pid namespace */
-//     u32 host_tid;               /* TID in host pid namespace */
-//     u32 host_ppid;              /* Parent PID in host pid namespace */
-//     char comm[TASK_COMM_LEN];   /* Command for the task */
-// } task_context_t;
+typedef struct task_context {
+    u32 host_pid;               /* PID in host pid namespace */
+    u32 host_tid;               /* TID in host pid namespace */
+    u32 host_ppid;              /* Parent PID in host pid namespace */
+    u32 pid;                    /* PID as in the userspace term */
+    u32 tid;                    /* TID as in the userspace term */
+    u32 ppid;                   /* Parent PID as in the userspace term */
+    u64 cgroup_id;              /* Cgroup ID */
+    u32 mntns_id;               /* Mount namespace inode number */
+    u32 pidns_id;               /* PID namespace inode number */
+    char comm[TASK_COMM_LEN];   /* Command for the task */
+    char exe_path[MAX_FILEPATH_SIZE];   /* Executable file path */
+} task_context_t;
 
-// typedef struct event_context {
-//     u64 ts;                     /* Timestamp at which event occurs */
-//     u32 syscall_id;             /* Syscall that triggered event */
-//     task_context_t task;        /* Task related context */
-// } event_context_t;
+typedef struct event_context {
+    u64 ts;                     /* Time at which ecent occurs in nanosecs since boot */
+    u32 syscall_id;             /* Syscall that triggered event, = -1 for application log */
+    task_context_t task;        /* Task related context */
+} event_context_t;
 
 struct applog_data_t {
     // Metadata
-    u64 ts;                                     /* time in nanosecs since boot */
-    u32 syscall_id;                             /* syscall id : -1 for application event */
-    u32 pid;                                    /* kernel's view of the pid */
-    u32 tgid;                                   /* process's view of the pid */
-    u32 ppid;                                   /* kernel's view of the parent's pid */
-    char comm[TASK_COMM_LEN];                   /* command for the task */
+    event_context_t event;                      /* Event context */
     // Data
     unsigned int fd;                            /* File descriptor */
     char msg[MAX_MSG_LEN];                      /* Application log message string (lms) */
@@ -58,128 +58,201 @@ struct applog_data_t {
 
 struct read_data_t {
     // Metadata
-    u64 ts;                                     /* time in nanosecs since boot */
-    u32 syscall_id;                             /* syscall id */
-    u32 pid;                                    /* kernel's view of the pid */
-    u32 tgid;                                   /* process's view of the pid */
-    u32 ppid;                                   /* kernel's view of the parent's pid */
-    char comm[TASK_COMM_LEN];                   /* command for the task */    
+    event_context_t event;                      /* Event context */
     // Args
     unsigned int fd;                            /* File descriptor of file to be read */
     char *buf;                                  /* Starting address of buffer */
     size_t count;                               /* Number of bytes ro be read */
     
-    int exit_code;                              /* Exit code */
+    long retval;                                /* Return value */
 };
 
 struct write_data_t {
     // Metadata
-    u64 ts;                                     /* time in nanosecs since boot */
-    u32 syscall_id;                             /* syscall id */
-    u32 pid;                                    /* kernel's view of the pid */
-    u32 tgid;                                   /* process's view of the pid */
-    u32 ppid;                                   /* kernel's view of the parent's pid */
-    char comm[TASK_COMM_LEN];                   /* command for the task */    
+    event_context_t event;                      /* Event context */
     // Args
     unsigned int fd;                            /* File descriptor of file to be written */
     char *buf;                                  /* Starting address of buffer */
     unsigned int count;                         /* Number of bytes being written */
     
-    int exit_code;                              /* Exit code */
+    long retval;                                /* Return value */
 };
 
 struct open_data_t {
     // Metadata
-    u64 ts;                                     /* time in nanosecs since boot */
-    u32 syscall_id;                             /* syscall id */
-    u32 pid;                                    /* kernel's view of the pid */
-    u32 tgid;                                   /* process's view of the pid */
-    u32 ppid;                                   /* kernel's view of the parent's pid */
-    char comm[TASK_COMM_LEN];                   /* command for the task */    
+    event_context_t event;                      /* Event context */
     // Args
     char filename[MAX_FILEPATH_SIZE];           /* File path of the file to be opened */
     int flags;                                  /* Flags */
     unsigned short mode;                        /* Mode */
     
-    int exit_code;                              /* Exit code */
+    long retval;                                /* Return value */
 };
 
 struct close_data_t {
     // Metadata
-    u64 ts;                                     /* time in nanosecs since boot */
-    u32 syscall_id;                             /* syscall id */
-    u32 pid;                                    /* kernel's view of the pid */
-    u32 tgid;                                   /* process's view of the pid */
-    u32 ppid;                                   /* kernel's view of the parent's pid */
-    char comm[TASK_COMM_LEN];                   /* command for the task */    
+    event_context_t event;                      /* Event context */
     // Args
     unsigned int fd;                            /* File descriptor to be closed */
 
-    int exit_code;                              /* Exit code */
+    long retval;                                /* Return value */
+};
+
+struct dup_data_t {
+    // Metadata
+    event_context_t event;                      /* Event context */
+    // Args
+    unsigned int fildes;                        /* File descriptor */
+
+    long retval;                                /* Return value */
+};
+
+struct dup2_data_t {
+    // Metadata
+    event_context_t event;                      /* Event context */
+    // Args
+    unsigned int oldfd;                         /* Old file descriptor */
+    unsigned int newfd;                         /* New file descriptor */
+
+    long retval;                                /* Return value */
+};
+
+struct connect_data_t {
+    // Metadata
+    event_context_t event;                      /* Event context */
+    // Args
+    int fd;                                     /* Socket file descriptor */
+    void *uservaddr;                            /* Server address info */
+    int addrlen;                                /* Server address length */
+    // Data
+
+    long retval;                                /* Return value */
+};
+
+struct accept_data_t {
+    // Metadata
+    event_context_t event;                      /* Event context */
+    // Args
+    int fd;                                     /* Socket file descriptor */
+    void *upeer_sockaddr;                       /* Peer address info */
+    int *upeer_addrlen;                         /* Peer address length */
+    // Data
+
+    long retval;                                /* Return value */
+};
+
+struct bind_data_t {
+    // Metadata
+    event_context_t event;                      /* Event context */
+    // Args
+    int fd;                                     /* Socket file descriptor */
+    void *umyaddr;                              /* My address info */
+    int addrlen;                                /* My address length */
+
+    long retval;                                /* Return value */
+};
+
+struct clone_data_t {
+    // Metadata
+    event_context_t event;                      /* Event context */
+    // Args
+    unsigned long flags;                        /* Flags */
+    void *newsp;                                /* New stack pointer */
+    int *parent_tid;                            /* Parent's TID (To be populated) */
+    int *child_tid;                             /* Child' TID (To be populated) */
+    unsigned long tls;                          /* Thread local struct */
+    
+    long retval;                                /* Return value */
+};
+
+struct fork_data_t {
+    // Metadata
+    event_context_t event;                      /* Event context */
+    
+    long retval;                                /* Return value */
+};
+
+struct vfork_data_t {
+    // Metadata
+    event_context_t event;                      /* Event context */
+    
+    long retval;                                /* Return value */
 };
 
 struct execve_data_t {
     // Metadata
-    u64 ts;                                     /* time in nanosecs since boot */
-    u32 syscall_id;                             /* syscall id */
-    u32 pid;                                    /* kernel's view of the pid */
-    u32 tgid;                                   /* process's view of the pid */
-    u32 ppid;                                   /* kernel's view of the parent's pid */
-    char comm[TASK_COMM_LEN];                   /* command for the task */
+    event_context_t event;                      /* Event context */
     // Args
     char filename[MAX_FILEPATH_SIZE];           /* File path of the binary that is executed */
-    
-    int exit_code;                              /* Exit code */
+    char argv[MAX_EXECVE_ARGS][MAX_FILEPATH_SIZE];  /* Arguments that the binary is executed with */
+    char **envp;                                /* Environment */
+
+    long retval;                                /* Return value */
 };
 
 struct exit_data_t {
     // Metadata
-    u64 ts;                                     /* time in nanosecs since boot */
-    u32 syscall_id;                             /* syscall id */
-    u32 pid;                                    /* kernel's view of the pid */
-    u32 tgid;                                   /* process's view of the pid */
-    u32 ppid;                                   /* kernel's view of the parent's pid */
-    char comm[TASK_COMM_LEN];                   /* command for the task */    
+    event_context_t event;                      /* Event context */
     // Args
     int error_code;                             /* Error code with which exited */
     
-    int exit_code;                              /* Exit code */
+    long retval;                                /* Return value */
 };
 
 struct exit_group_data_t {
     // Metadata
-    u64 ts;                                     /* time in nanosecs since boot */
-    u32 syscall_id;                             /* syscall id */
-    u32 pid;                                    /* kernel's view of the pid */
-    u32 tgid;                                   /* process's view of the pid */
-    u32 ppid;                                   /* kernel's view of the parent's pid */
-    char comm[TASK_COMM_LEN];                   /* command for the task */    
+    event_context_t event;                      /* Event context */
     // Args
     int error_code;                             /* Error code with which exited */
     
-    int exit_code;                              /* Exit code */
+    long retval;                                /* Return value */
 };
 
 struct openat_data_t {
     // Metadata
-    u64 ts;                                     /* time in nanosecs since boot */
-    u32 syscall_id;                             /* syscall id */
-    u32 pid;                                    /* kernel's view of the pid */
-    u32 tgid;                                   /* process's view of the pid */
-    u32 ppid;                                   /* kernel's view of the parent's pid */
-    char comm[TASK_COMM_LEN];                   /* command for the task */    
+    event_context_t event;                      /* Event context */
     // Args
     int dfd;                                    /* Directory file descriptor */
     char filename[MAX_FILEPATH_SIZE];           /* File path of the file to be opened */
     int flags;                                  /* Flags */
     unsigned short mode;                        /* Mode */
     
-    int exit_code;                              /* Exit code */
+    long retval;                                /* Return value */
 };
 
-struct copy_str
-{
-    char exe_name[MAX_FILEPATH_SIZE];
+struct unlinkat_data_t {
+    // Metadata
+    event_context_t event;                      /* Event context */
+    // Args
+    int dfd;                                    /* Directory file descriptor */
+    char pathname[MAX_FILEPATH_SIZE];           /* File path of the file to be unlinked */
+    int flag;                                   /* Flags */
+
+    long retval;                                /* Return value */
+};
+
+struct accept4_data_t {
+    // Metadata
+    event_context_t event;                      /* Event context */
+    // Args
+    int fd;                                     /* Socket file descriptor */
+    void *upeer_sockaddr;                       /* Peer address info (To be populated) */
+    int *upeer_addrlen;                         /* Peer address length (To be populated) */
+    int flags;                                  /* Flags */      
+    // Data
+    
+    long retval;                                /* Return value */
+};
+
+struct dup3_data_t {
+    // Metadata
+    event_context_t event;                      /* Event context */
+    // Args
+    unsigned int oldfd;                         /* Old file descriptor */
+    unsigned int newfd;                         /* New file descriptor */
+    int flags;                                  /* Flags */
+
+    long retval;                                /* Return value */
 };
 
 
