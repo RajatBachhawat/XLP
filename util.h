@@ -4,21 +4,23 @@
 #include "vmlinux.h"
 #include "writesnoop.h"
 #include "syscall.h"
+#include "filesystem.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 
 #define FILTER_SELF if(mypid == (bpf_get_current_pid_tgid() >> 32)) {return 0;}
+#define FILTER_CONTAINER if((bpf_get_current_pid_tgid() >> 32) == get_task_ns_tgid((struct task_struct *)bpf_get_current_task())) {return 0;}
 
-struct args_t
+typedef struct
 {
     long unsigned int args[6];
-};
+} args_t;
 
-struct copy_str
+typedef struct
 {
     char exe_name[MAX_FILEPATH_SIZE];
-};
+} copy_str;
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -28,23 +30,16 @@ struct {
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, u32);
-    __type(value, struct copy_str);
+    __type(value, copy_str);
     __uint(max_entries, 10240);
 } pid_exec_map SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__type(key, u32);
-    __type(value, struct args_t);
+    __type(value, args_t);
     __uint(max_entries, 1024);
 } pid_args_map SEC(".maps");
-
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, u32);
-    __type(value, struct copy_str);
-    __uint(max_entries, 10240);
-} pid_open_files;
 
 static void *reserve_in_event_queue(void *ringbuf, u64 payload_size, u64 flags)
 {
@@ -151,8 +146,10 @@ static void init_event(event_context_t *event_ctx, struct task_struct *task, u32
     event_ctx->task.mntns_id = get_task_mnt_ns_id(task);
     event_ctx->task.pidns_id = get_task_pid_ns_id(task);
     bpf_get_current_comm(event_ctx->task.comm, sizeof(event_ctx->task.comm));
-    struct copy_str *exe = (struct copy_str *)bpf_map_lookup_elem(&pid_exec_map, &host_pid);
-    bpf_probe_read_str(event_ctx->task.exe_path, sizeof(event_ctx->task.exe_path), exe->exe_name);
+    // copy_str *exe = (copy_str *)bpf_map_lookup_elem(&pid_exec_map, &host_pid);
+    struct file *f = BPF_CORE_READ(task, mm, exe_file);
+    char *filepath = (char *)get_file_str(f);
+    bpf_probe_read_str(event_ctx->task.exe_path, sizeof(event_ctx->task.exe_path), filepath);
     // task->cgroups->dfl_cgrp->kn->id;
     //  u64 cgroup_id = task_cgroup(task)->css.cgroup->kn->id;
 }

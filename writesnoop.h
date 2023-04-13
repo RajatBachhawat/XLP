@@ -1,5 +1,3 @@
-/* SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause) */
-/* Copyright (c) 2020 Facebook */
 #ifndef __WRITESNOOP_H
 #define __WRITESNOOP_H
 
@@ -10,6 +8,10 @@
 #define MAX_DIR_LEVELS_ALLOWED 6
 #define MAX_EXECVE_ARGS 20
 #define SYSCALL_NAME_MAXLEN 20
+#define MAX_PERCPU_BUFSIZE (1 << 15)
+#define MAX_BUFFERS 2
+#define MAX_PATH_COMPONENTS 16
+#define MAX_STRING_SIZE 1024
 
 typedef signed char __s8;
 typedef unsigned char __u8;
@@ -63,6 +65,8 @@ struct read_data_t {
     unsigned int fd;                            /* File descriptor of file to be read */
     char *buf;                                  /* Starting address of buffer */
     size_t count;                               /* Number of bytes ro be read */
+
+    char filepath[MAX_FILEPATH_SIZE];           /* Full path of the file read from */
     
     long retval;                                /* Return value */
 };
@@ -74,6 +78,8 @@ struct write_data_t {
     unsigned int fd;                            /* File descriptor of file to be written */
     char *buf;                                  /* Starting address of buffer */
     unsigned int count;                         /* Number of bytes being written */
+
+    char filepath[MAX_FILEPATH_SIZE];           /* Full path of the file written to */
     
     long retval;                                /* Return value */
 };

@@ -62,7 +62,7 @@ static __always_inline int check_log_filepath(unsigned int fd) {
     // bpf_probe_read_kernel(&f, sizeof(f), &_fdt[fd]);
     // bpf_probe_read_kernel(&de, sizeof(de), &f->f_path.dentry);
     _fdt = BPF_CORE_READ(curr, files, fdt, fd);
-    bpf_core_read(&f, sizeof(f), &_fdt[fd]);;
+    bpf_core_read(&f, sizeof(f), &_fdt[fd]);
     de = BPF_CORE_READ(f, f_path.dentry);
 
     /* Iterate up the dentry hierarchy and store the lowest levels at which
@@ -110,6 +110,7 @@ int handle_read_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[2] : unsigned int count
     */
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct read_data_t *read_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -126,7 +127,7 @@ int handle_read_exit(struct trace_event_raw_sys_exit *ctx)
 
     /* Lookup in args map */
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && read_data != NULL)
@@ -160,6 +161,7 @@ int handle_write_exit(struct trace_event_raw_sys_exit *ctx)
     }
 
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct write_data_t *write_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -176,7 +178,7 @@ int handle_write_exit(struct trace_event_raw_sys_exit *ctx)
 
     /* Lookup in args map */
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && write_data != NULL)
@@ -185,6 +187,10 @@ int handle_write_exit(struct trace_event_raw_sys_exit *ctx)
         write_data->buf = (char *)ctx_args->args[1];
         write_data->count = (unsigned int)ctx_args->args[2];
         write_data->retval = ctx->ret;
+
+        struct file *f = get_struct_file_from_fd(write_data->fd);
+        char *filepath = get_file_str(f);
+        bpf_probe_read_str(write_data->filepath, sizeof(write_data->filepath), filepath);
     }
 
     /* Submit to event queue */
@@ -204,8 +210,7 @@ int handle_write_exit(struct trace_event_raw_sys_exit *ctx)
         char *buf = (char *)ctx_args->args[1];
         while(c--) {
             /* Reserve sizeof(struct applog_data_t) + sizeof(u32) storage in the ringbuffer */
-            FILTER_SELF
-    void *event_data;
+            void *event_data;
             struct applog_data_t *applog_data;
 
             event_data = reserve_in_event_queue(&rb, sizeof(struct applog_data_t), 0);
@@ -244,6 +249,7 @@ int handle_open_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[2] : umode_t mode
     */
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct open_data_t *open_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -260,7 +266,7 @@ int handle_open_exit(struct trace_event_raw_sys_exit *ctx)
 
     /* Lookup in args map */
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && open_data != NULL)
@@ -286,6 +292,7 @@ int handle_close_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[0] : unsigned int fd
     */
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct close_data_t *close_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -302,7 +309,7 @@ int handle_close_exit(struct trace_event_raw_sys_exit *ctx)
 
     /* Lookup in args map */
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && close_data != NULL)
@@ -326,6 +333,7 @@ int handle_dup_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[0] : unsigned int fildes
     */
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct dup_data_t *dup_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -342,7 +350,7 @@ int handle_dup_exit(struct trace_event_raw_sys_exit *ctx)
 
      /* Lookup in args map */
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && dup_data != NULL)
@@ -367,6 +375,7 @@ int handle_dup2_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[1] : unsigned int newfd
     */
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct dup2_data_t *dup2_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -383,7 +392,7 @@ int handle_dup2_exit(struct trace_event_raw_sys_exit *ctx)
 
     /* Lookup in args map */
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && dup2_data != NULL)
@@ -410,6 +419,7 @@ int handle_connect_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[2] : int addrlen
     */
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct connect_data_t *connect_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -427,7 +437,7 @@ int handle_connect_exit(struct trace_event_raw_sys_exit *ctx)
     /* Lookup in args map */
     
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && connect_data != NULL)
@@ -455,6 +465,7 @@ int handle_accept_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[2] : int upeer_addrlen
     */
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct accept_data_t *accept_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -471,7 +482,7 @@ int handle_accept_exit(struct trace_event_raw_sys_exit *ctx)
 
     /* Lookup in args map */
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && event_data != NULL)
@@ -499,6 +510,7 @@ int handle_bind_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[2] : int addrlen
     */
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct bind_data_t *bind_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -515,7 +527,7 @@ int handle_bind_exit(struct trace_event_raw_sys_exit *ctx)
 
     /* Lookup in args map */
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && bind_data != NULL)
@@ -538,9 +550,10 @@ SEC("raw_tracepoint/sys_enter")
 int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
 {
     FILTER_SELF
+    FILTER_CONTAINER
 
     int syscall_id = ctx->args[1];
-    struct args_t ctx_args = {};
+    args_t ctx_args = {};
     struct pt_regs *regs = (struct pt_regs *)ctx->args[0];
     switch(syscall_id)
     {
@@ -585,6 +598,7 @@ SEC("tp/syscalls/sys_exit_clone")
 int handle_clone_exit(struct trace_event_raw_sys_exit *ctx)
 {
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct clone_data_t *clone_data;
 
@@ -603,7 +617,7 @@ int handle_clone_exit(struct trace_event_raw_sys_exit *ctx)
 
     /* Lookup in args map */
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && clone_data != NULL)
@@ -617,11 +631,14 @@ int handle_clone_exit(struct trace_event_raw_sys_exit *ctx)
     }
 
     /* Update (pid, executable name) map. */
-    struct copy_str ename = {};
-    u32 ppid = clone_data->event.task.ppid;
-    struct copy_str *parent_ename = bpf_map_lookup_elem(&pid_exec_map, &ppid);
-    bpf_probe_read_str(ename.exe_name, sizeof(ename.exe_name), parent_ename->exe_name );
-    bpf_map_update_elem(&pid_exec_map, &host_pid, &ename, 0);
+    if(clone_data != NULL && clone_data->retval == 0 && clone_data->event.task.pid == clone_data->event.task.tid)
+    {
+        copy_str ename = {};
+        u32 ppid = clone_data->event.task.ppid;
+        copy_str *parent_ename = bpf_map_lookup_elem(&pid_exec_map, &ppid);
+        bpf_probe_read_str(ename.exe_name, sizeof(ename.exe_name), parent_ename->exe_name);
+        bpf_map_update_elem(&pid_exec_map, &host_pid, &ename, 0);
+    }
 
     /* Delete from args map */
     bpf_map_delete_elem(&pid_args_map, &host_pid);
@@ -636,6 +653,7 @@ SEC("tp/syscalls/sys_exit_fork")
 int handle_fork_exit(struct trace_event_raw_sys_exit *ctx)
 {
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct fork_data_t *fork_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -653,7 +671,7 @@ int handle_fork_exit(struct trace_event_raw_sys_exit *ctx)
     /* Lookup in args map */
     
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
     
     if(ctx_args != NULL && fork_data != NULL)
     {
@@ -672,6 +690,7 @@ SEC("tp/syscalls/sys_exit_vfork")
 int handle_vfork_exit(struct trace_event_raw_sys_exit *ctx)
 {
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct vfork_data_t *vfork_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -688,7 +707,7 @@ int handle_vfork_exit(struct trace_event_raw_sys_exit *ctx)
 
     /* Lookup in args map */
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && vfork_data != NULL)
@@ -710,7 +729,7 @@ int handle_execve_enter(struct trace_event_raw_sys_enter *ctx)
     u64 tgid_pid = bpf_get_current_pid_tgid();
     u32 host_pid = (tgid_pid >> 32);
     /* Update (pid, name of executable) map */
-    struct copy_str ename = {};
+    copy_str ename = {};
     bpf_probe_read_user_str(ename.exe_name, sizeof(ename.exe_name), (char *)ctx->args[0]);
     bpf_map_update_elem(&pid_exec_map, &host_pid, &ename, 0);
     return 0;
@@ -725,6 +744,7 @@ int handle_execve_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[2] : const char *__envp
     */
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct execve_data_t *execve_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -742,7 +762,7 @@ int handle_execve_exit(struct trace_event_raw_sys_exit *ctx)
     init_event(&execve_data->event, curr, SYSCALL_EXECVE);
 
     /* Lookup in args map */
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args = bpf_map_lookup_elem(&pid_args_map, &host_pid);
     
     if(ctx_args != NULL && execve_data != NULL)
     {
@@ -767,6 +787,7 @@ int handle_exit_exit(struct trace_event_raw_sys_exit *ctx)
     cts->args[0] : int error_code
     */
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct exit_data_t *exit_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -783,7 +804,7 @@ int handle_exit_exit(struct trace_event_raw_sys_exit *ctx)
 
     /* Lookup in args map */
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && exit_data != NULL)
@@ -806,6 +827,7 @@ int handle_exit_group(struct trace_event_raw_sys_exit *ctx)
     cts->args[0] : int error_code
     */
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct exit_group_data_t *exit_group_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -822,7 +844,7 @@ int handle_exit_group(struct trace_event_raw_sys_exit *ctx)
 
     /* Lookup in args map */
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && exit_group_data != NULL)
@@ -853,6 +875,7 @@ int handle_openat_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[3] : umode_t mode
     */
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct openat_data_t *openat_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -869,7 +892,7 @@ int handle_openat_exit(struct trace_event_raw_sys_exit *ctx)
 
     /* Lookup in args map */
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && openat_data != NULL)
@@ -881,7 +904,7 @@ int handle_openat_exit(struct trace_event_raw_sys_exit *ctx)
         openat_data->retval = ctx->ret;
 
         /* Update (pid, file opened) map */
-        // struct copy_str ename = {};
+        // copy_str ename = {};
         // bpf_probe_read_user_str(ename.exe_name, sizeof(ename.exe_name), (char *)ctx_args->args[0]);
         // bpf_map_update_elem(&pid_exec_map, &host_pid, &ename, 0);
     }
@@ -903,6 +926,7 @@ int handle_unlinkat_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[2] : int flag
     */
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct unlinkat_data_t *unlinkat_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -919,7 +943,7 @@ int handle_unlinkat_exit(struct trace_event_raw_sys_exit *ctx)
 
     /* Lookup in args map */
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && unlinkat_data != NULL)
@@ -947,6 +971,7 @@ int handle_accept4_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[2] : int upeer_addrlen
     */
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct accept4_data_t *accept4_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -963,7 +988,7 @@ int handle_accept4_exit(struct trace_event_raw_sys_exit *ctx)
 
     /* Lookup in args map */
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && accept4_data != NULL)
@@ -993,6 +1018,7 @@ int handle_dup3_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[2] : int flags
     */
     FILTER_SELF
+    FILTER_CONTAINER
     void *event_data;
     struct dup3_data_t *dup3_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -1010,7 +1036,7 @@ int handle_dup3_exit(struct trace_event_raw_sys_exit *ctx)
     /* Lookup in args map */
     
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
-    struct args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
+    args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
     /* Arguments */
     if(ctx_args != NULL && dup3_data != NULL)
