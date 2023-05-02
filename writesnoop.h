@@ -3,7 +3,7 @@
 
 #define TASK_COMM_LEN 16
 #define MAX_MSG_LEN 200
-#define MAX_FILEPATH_SIZE 100
+#define MAX_FILEPATH_SIZE 200
 #define MAX_FILE_AND_DIR_NAME_SIZE 10
 #define MAX_DIR_LEVELS_ALLOWED 6
 #define MAX_EXECVE_ARGS 20
@@ -189,9 +189,8 @@ struct execve_data_t {
     // Metadata
     event_context_t event;                      /* Event context */
     // Args
-    char filename[MAX_FILEPATH_SIZE];           /* File path of the binary that is executed */
-    char argv[MAX_EXECVE_ARGS][MAX_FILEPATH_SIZE];  /* Arguments that the binary is executed with */
-    char **envp;                                /* Environment */
+    char *filename;                                 /* File path of the binary that is executed */
+    char **argv;                                    /* Arguments that the binary is executed with */
 
     long retval;                                /* Return value */
 };

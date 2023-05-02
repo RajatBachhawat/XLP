@@ -16,6 +16,8 @@ COPY ./writesnoop.c ./writesnoop.c
 COPY ./writesnoop.h ./writesnoop.h
 COPY ./syscall.h ./syscall.h
 COPY ./util.h ./util.h
+COPY ./buffer.h ./buffer.h
+COPY ./filesystem.h ./filesystem.h
 COPY ./Makefile ./Makefile
 
 RUN make

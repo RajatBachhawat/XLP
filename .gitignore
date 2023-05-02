@@ -6,6 +6,10 @@
 # logs directory (don't ignore)
 !logs/
 
+# test directory (dont't ignore)
+!test
+!test/**
+
 # Makefile (don't ignore)
 !Makefile
 
@@ -16,9 +20,6 @@
 libbpf-bootstrap/
 .vscode/
 .output/
-
-# Custom
-test.c
 
 # Todo
 todo

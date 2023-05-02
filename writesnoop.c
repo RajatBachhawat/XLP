@@ -653,13 +653,14 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 						}
 					},
 					"arguments":{
-						"filename":"%s"
+						"filename":"0x%08x",
+						"argv":"0x%08x"
 					}
 				}
 				),
 				d->event.ts, ts, d->event.syscall_id, d->retval, d->event.task.host_pid, d->event.task.host_tid,
 				d->event.task.host_ppid, d->event.task.pid, d->event.task.tid, d->event.task.ppid, d->event.task.cgroup_id,
-				d->event.task.mntns_id, d->event.task.pidns_id, d->event.task.comm, d->filename
+				d->event.task.mntns_id, d->event.task.pidns_id, d->event.task.comm, d->filename, d->argv
 			);
 			break;
 		}

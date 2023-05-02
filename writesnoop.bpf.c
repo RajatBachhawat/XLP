@@ -129,13 +129,18 @@ int handle_read_exit(struct trace_event_raw_sys_exit *ctx)
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
     args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
-    /* Arguments */
     if(ctx_args != NULL && read_data != NULL)
     {
+        /* Arguments */
         read_data->fd = (unsigned int)ctx_args->args[0];
         read_data->buf = (char *)ctx_args->args[1];
         read_data->count = (unsigned int)ctx_args->args[2];
         read_data->retval = ctx->ret;
+
+        /* File read from */
+        struct file *f = get_struct_file_from_fd(read_data->fd);
+        char *filepath = get_file_str(f);
+        bpf_probe_read_str(read_data->filepath, sizeof(read_data->filepath), filepath);
     }
     
     /* Delete from args map */
@@ -154,14 +159,10 @@ int handle_write_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[1] : const char *buf
     ctx->args[2] : unsigned int count
     */
-	u64 tgid_pid = bpf_get_current_pid_tgid();
-    /* If the write call was made by the frontend program it's useless */
-    if(mypid == (tgid_pid >> 32)) {
-        return 0;
-    }
 
     FILTER_SELF
     FILTER_CONTAINER
+    
     void *event_data;
     struct write_data_t *write_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -180,14 +181,15 @@ int handle_write_exit(struct trace_event_raw_sys_exit *ctx)
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
     args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
 
-    /* Arguments */
     if(ctx_args != NULL && write_data != NULL)
     {
+        /* Arguments */
         write_data->fd = (unsigned int)ctx_args->args[0];
         write_data->buf = (char *)ctx_args->args[1];
         write_data->count = (unsigned int)ctx_args->args[2];
         write_data->retval = ctx->ret;
 
+        /* File written to */
         struct file *f = get_struct_file_from_fd(write_data->fd);
         char *filepath = get_file_str(f);
         bpf_probe_read_str(write_data->filepath, sizeof(write_data->filepath), filepath);
@@ -248,8 +250,10 @@ int handle_open_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[1] : int flags
     ctx->args[2] : umode_t mode
     */
+
     FILTER_SELF
     FILTER_CONTAINER
+    
     void *event_data;
     struct open_data_t *open_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -545,7 +549,6 @@ int handle_bind_exit(struct trace_event_raw_sys_exit *ctx)
     return 0;
 }
 
-
 SEC("raw_tracepoint/sys_enter")
 int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
 {
@@ -593,7 +596,6 @@ int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
     return 0;
 }
 
-
 SEC("tp/syscalls/sys_exit_clone")
 int handle_clone_exit(struct trace_event_raw_sys_exit *ctx)
 {
@@ -614,7 +616,6 @@ int handle_clone_exit(struct trace_event_raw_sys_exit *ctx)
     /* Task and event context */
     init_event(&clone_data->event, curr, SYSCALL_CLONE);
 
-
     /* Lookup in args map */
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
     args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
@@ -630,14 +631,17 @@ int handle_clone_exit(struct trace_event_raw_sys_exit *ctx)
         clone_data->retval = ctx->ret;
     }
 
-    /* Update (pid, executable name) map. */
     if(clone_data != NULL && clone_data->retval == 0 && clone_data->event.task.pid == clone_data->event.task.tid)
     {
+        /* Update pid_exec map if child process */
         copy_str ename = {};
-        u32 ppid = clone_data->event.task.ppid;
-        copy_str *parent_ename = bpf_map_lookup_elem(&pid_exec_map, &ppid);
-        bpf_probe_read_str(ename.exe_name, sizeof(ename.exe_name), parent_ename->exe_name);
+        struct file *f = BPF_CORE_READ(curr, mm, exe_file);
+        char *exe_filepath = (char *)get_file_str(f);
+        bpf_core_read_str(ename.exe_name, sizeof(ename.exe_name), exe_filepath);
         bpf_map_update_elem(&pid_exec_map, &host_pid, &ename, 0);
+
+        /* Update task_context data */
+        bpf_core_read_str(clone_data->event.task.exe_path, sizeof(clone_data->event.task.exe_path), exe_filepath);
     }
 
     /* Delete from args map */
@@ -673,9 +677,23 @@ int handle_fork_exit(struct trace_event_raw_sys_exit *ctx)
     u32 host_pid = (bpf_get_current_pid_tgid() >> 32);
     args_t *ctx_args  = bpf_map_lookup_elem(&pid_args_map, &host_pid);
     
+    /* Arguments */
     if(ctx_args != NULL && fork_data != NULL)
     {
         fork_data->retval = ctx->ret;
+    }
+
+    if(fork_data != NULL && fork_data->retval == 0)
+    {
+        /* Update pid_exec map if child process */
+        copy_str ename = {};
+        struct file *f = BPF_CORE_READ(curr, mm, exe_file);
+        char *exe_filepath = (char *)get_file_str(f);
+        bpf_core_read_str(ename.exe_name, sizeof(ename.exe_name), exe_filepath);
+        bpf_map_update_elem(&pid_exec_map, &host_pid, &ename, 0);
+
+        /* Update task_context data */
+        bpf_core_read_str(fork_data->event.task.exe_path, sizeof(fork_data->event.task.exe_path), exe_filepath);
     }
 
     /* Delete from args map */
@@ -714,6 +732,19 @@ int handle_vfork_exit(struct trace_event_raw_sys_exit *ctx)
     {
         vfork_data->retval = ctx->ret;
     }
+
+    if(vfork_data != NULL && vfork_data->retval == 0)
+    {
+        /* Update pid_exec map if child process */
+        copy_str ename = {};
+        struct file *f = BPF_CORE_READ(curr, mm, exe_file);
+        char *exe_filepath = (char *)get_file_str(f);
+        bpf_core_read_str(ename.exe_name, sizeof(ename.exe_name), exe_filepath);
+        bpf_map_update_elem(&pid_exec_map, &host_pid, &ename, 0);
+
+        /* Update task_context data */
+        bpf_core_read_str(vfork_data->event.task.exe_path, sizeof(vfork_data->event.task.exe_path), exe_filepath);
+    }
     
     /* Delete from args map */
     bpf_map_delete_elem(&pid_args_map, &host_pid);
@@ -726,12 +757,7 @@ int handle_vfork_exit(struct trace_event_raw_sys_exit *ctx)
 SEC("tp/syscalls/sys_enter_execve")
 int handle_execve_enter(struct trace_event_raw_sys_enter *ctx)
 {
-    u64 tgid_pid = bpf_get_current_pid_tgid();
-    u32 host_pid = (tgid_pid >> 32);
-    /* Update (pid, name of executable) map */
-    copy_str ename = {};
-    bpf_probe_read_user_str(ename.exe_name, sizeof(ename.exe_name), (char *)ctx->args[0]);
-    bpf_map_update_elem(&pid_exec_map, &host_pid, &ename, 0);
+    /* TODO: Pass filename string and argv list of strings to the exit tracepoint */
     return 0;
 }
 
@@ -743,8 +769,10 @@ int handle_execve_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[1] : const char *__argv
     ctx->args[2] : const char *__envp
     */
+
     FILTER_SELF
     FILTER_CONTAINER
+    
     void *event_data;
     struct execve_data_t *execve_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -767,8 +795,19 @@ int handle_execve_exit(struct trace_event_raw_sys_exit *ctx)
     if(ctx_args != NULL && execve_data != NULL)
     {
         /* Arguments */
-        bpf_probe_read_user_str(execve_data->filename, sizeof(execve_data->filename), (char *)ctx_args->args[0]);
+        execve_data->filename = (char *)ctx_args->args[0];
+        execve_data->argv = (char **)ctx_args->args[1];
         execve_data->retval = ctx->ret;
+
+        /* Update pid_exec map */
+        copy_str ename = {};
+        struct file *f = BPF_CORE_READ(curr, mm, exe_file);
+        char *exe_filepath = (char *)get_file_str(f);
+        bpf_core_read_str(ename.exe_name, sizeof(ename.exe_name), exe_filepath);
+        bpf_map_update_elem(&pid_exec_map, &host_pid, &ename, 0);
+
+        /* Update task_context data */
+        bpf_core_read_str(execve_data->event.task.exe_path, sizeof(execve_data->event.task.exe_path), exe_filepath);
     }
     
     /* Delete from args map */
@@ -812,6 +851,10 @@ int handle_exit_exit(struct trace_event_raw_sys_exit *ctx)
         exit_data->error_code = (int)ctx_args->args[0];
         exit_data->retval = ctx->ret;
     }
+
+    /* Clear pid_exec_map */
+    bpf_map_delete_elem(&pid_exec_map, &host_pid);
+
     /* Delete from args map */
     bpf_map_delete_elem(&pid_args_map, &host_pid);
 
@@ -853,7 +896,6 @@ int handle_exit_group(struct trace_event_raw_sys_exit *ctx)
         exit_group_data->retval = ctx->ret;
     }
     
-
     /* Clear pid_exec_map */
     bpf_map_delete_elem(&pid_exec_map, &host_pid);
 

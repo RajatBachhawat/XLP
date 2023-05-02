@@ -146,12 +146,8 @@ static void init_event(event_context_t *event_ctx, struct task_struct *task, u32
     event_ctx->task.mntns_id = get_task_mnt_ns_id(task);
     event_ctx->task.pidns_id = get_task_pid_ns_id(task);
     bpf_get_current_comm(event_ctx->task.comm, sizeof(event_ctx->task.comm));
-    // copy_str *exe = (copy_str *)bpf_map_lookup_elem(&pid_exec_map, &host_pid);
-    struct file *f = BPF_CORE_READ(task, mm, exe_file);
-    char *filepath = (char *)get_file_str(f);
-    bpf_probe_read_str(event_ctx->task.exe_path, sizeof(event_ctx->task.exe_path), filepath);
-    // task->cgroups->dfl_cgrp->kn->id;
-    //  u64 cgroup_id = task_cgroup(task)->css.cgroup->kn->id;
+    copy_str *exe_filepath = (copy_str *)bpf_map_lookup_elem(&pid_exec_map, &host_pid);
+    bpf_probe_read_str(event_ctx->task.exe_path, sizeof(event_ctx->task.exe_path), exe_filepath->exe_name);
 }
 
 static void *init_event_header(void *data, u32 syscall_id)
