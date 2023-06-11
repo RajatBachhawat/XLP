@@ -1,25 +1,7 @@
-# Executables
-*
-!**.*
-**.out
-
-# logs directory (don't ignore)
-!logs/
-
-# test directory (dont't ignore)
-!test
-!test/**
-
-# Makefile (don't ignore)
-!Makefile
-
-# Dockerfile (don't ignore)
-!Dockerfile
-
 # Directories
 libbpf-bootstrap/
 .vscode/
-.output/
 
 # Todo
 todo
+guc

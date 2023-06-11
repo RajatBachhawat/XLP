@@ -55,6 +55,7 @@ struct applog_data_t {
     event_context_t event;                      /* Event context */
     // Data
     unsigned int fd;                            /* File descriptor */
+    unsigned int count;                         /* Number of characters in full log message */
     char msg[MAX_MSG_LEN];                      /* Application log message string (lms) */
 };
 

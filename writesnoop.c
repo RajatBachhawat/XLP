@@ -29,7 +29,6 @@ static void sig_handler(int sig)
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	u32 event_id = *((u32 *)data);
-	// TODO: ADD SANITY CHECK OF EVENT ID
 	data = data + sizeof(u32);
 	switch(event_id)
 	{
@@ -41,7 +40,50 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 			time(&t); struct tm *tmd = localtime(&t);
 			strftime(ts, sizeof(ts), "%H:%M:%S", tmd);
 
+			char escaped_msg[250];
 
+			// Escape all double quotes, newlines and other whitespace special chars
+			int j = 0;
+			for(int i = 0; i < d->count; i++)
+			{
+				char ch = d->msg[i];
+				if(ch == '\"')
+				{
+					strcpy(escaped_msg + j,"\\\"");
+					j += 2;
+				}
+				else if(ch == '\f')
+				{
+					strcpy(escaped_msg + j,"\\f");
+					j += 2;
+				}
+				else if(ch == '\n')
+				{
+					strcpy(escaped_msg + j,"\\n");
+					j += 2;
+				}
+				else if(ch == '\r')
+				{
+					strcpy(escaped_msg + j,"\\r");
+					j += 2;
+				}
+				else if(ch == '\t')
+				{
+					strcpy(escaped_msg + j,"\\t");
+					j += 2;
+				}
+				else if(ch == '\v')
+				{
+					strcpy(escaped_msg + j,"\\v");
+					j += 2;
+				}
+				else
+				{
+					escaped_msg[j] = ch;
+					j += 1;
+				}
+			}
+			escaped_msg[j]='\0';
 			printf(
 				QUOTE(
 				{
@@ -73,7 +115,7 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 				),
 				d->event.ts, ts, d->event.task.host_pid, d->event.task.host_tid,
 				d->event.task.host_ppid, d->event.task.pid, d->event.task.tid, d->event.task.ppid, d->event.task.cgroup_id,
-				d->event.task.mntns_id, d->event.task.pidns_id, d->event.task.comm, d->fd, d->msg, d->event.task.exe_path
+				d->event.task.mntns_id, d->event.task.pidns_id, d->event.task.comm, d->fd, escaped_msg, d->event.task.exe_path
 			);
 			break;
 		}
@@ -973,6 +1015,9 @@ int main(int argc, char **argv)
 
 	/* ensure that BPF program only handles write() syscalls from other processes */
 	skel->bss->mypid = getpid();
+
+	if(strcmp(argv[1], "-c") == 0)
+		skel->bss->filter_container = 1;
 
 	/* Load & verify BPF programs */
 	err = writesnoop_bpf__load(skel);

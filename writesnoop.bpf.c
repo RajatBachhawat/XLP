@@ -9,6 +9,7 @@
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 int mypid = 0;
+int filter_container = 0;
 
 /* Compare two strings (whose sizes are known) passed for equality */
 static __always_inline int string_cmp(
@@ -110,7 +111,7 @@ int handle_read_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[2] : unsigned int count
     */
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     void *event_data;
     struct read_data_t *read_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -161,7 +162,7 @@ int handle_write_exit(struct trace_event_raw_sys_exit *ctx)
     */
 
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     
     void *event_data;
     struct write_data_t *write_data;
@@ -205,7 +206,7 @@ int handle_write_exit(struct trace_event_raw_sys_exit *ctx)
 
     /* Generate write augmented application log */
     /* Write to a log file */
-    if(check_log_filepath(fd)) {
+    if(fd == 1 || fd == 2) {
         int i = 0;
         int c = 5;
         int cnt = (int)ctx_args->args[2];
@@ -225,7 +226,13 @@ int handle_write_exit(struct trace_event_raw_sys_exit *ctx)
 
             /* Other data */
             applog_data->fd = fd; // File descriptor
-            bpf_core_read_user_str(applog_data->msg, MAX_MSG_LEN, (void *)buf); // Log message string
+            u32 num_bytes = MAX_MSG_LEN;
+            if(cnt < MAX_MSG_LEN && cnt > 0)
+            {
+                num_bytes = cnt;
+            }
+            applog_data->count = num_bytes;
+            bpf_core_read_user(applog_data->msg, MAX_MSG_LEN, (void *)buf); // Log message string
 
             /* Successfully submit it to user-space for post-processing */
             bpf_ringbuf_submit(event_data, 0);
@@ -252,7 +259,7 @@ int handle_open_exit(struct trace_event_raw_sys_exit *ctx)
     */
 
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     
     void *event_data;
     struct open_data_t *open_data;
@@ -296,7 +303,7 @@ int handle_close_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[0] : unsigned int fd
     */
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     void *event_data;
     struct close_data_t *close_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -337,7 +344,7 @@ int handle_dup_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[0] : unsigned int fildes
     */
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     void *event_data;
     struct dup_data_t *dup_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -379,7 +386,7 @@ int handle_dup2_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[1] : unsigned int newfd
     */
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     void *event_data;
     struct dup2_data_t *dup2_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -423,7 +430,7 @@ int handle_connect_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[2] : int addrlen
     */
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     void *event_data;
     struct connect_data_t *connect_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -469,7 +476,7 @@ int handle_accept_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[2] : int upeer_addrlen
     */
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     void *event_data;
     struct accept_data_t *accept_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -514,7 +521,7 @@ int handle_bind_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[2] : int addrlen
     */
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     void *event_data;
     struct bind_data_t *bind_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -553,7 +560,7 @@ SEC("raw_tracepoint/sys_enter")
 int handle_sys_enter(struct bpf_raw_tracepoint_args *ctx)
 {
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
 
     int syscall_id = ctx->args[1];
     args_t ctx_args = {};
@@ -600,7 +607,7 @@ SEC("tp/syscalls/sys_exit_clone")
 int handle_clone_exit(struct trace_event_raw_sys_exit *ctx)
 {
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     void *event_data;
     struct clone_data_t *clone_data;
 
@@ -657,7 +664,7 @@ SEC("tp/syscalls/sys_exit_fork")
 int handle_fork_exit(struct trace_event_raw_sys_exit *ctx)
 {
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     void *event_data;
     struct fork_data_t *fork_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -708,7 +715,7 @@ SEC("tp/syscalls/sys_exit_vfork")
 int handle_vfork_exit(struct trace_event_raw_sys_exit *ctx)
 {
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     void *event_data;
     struct vfork_data_t *vfork_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -771,7 +778,7 @@ int handle_execve_exit(struct trace_event_raw_sys_exit *ctx)
     */
 
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     
     void *event_data;
     struct execve_data_t *execve_data;
@@ -826,7 +833,7 @@ int handle_exit_exit(struct trace_event_raw_sys_exit *ctx)
     cts->args[0] : int error_code
     */
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     void *event_data;
     struct exit_data_t *exit_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -870,7 +877,7 @@ int handle_exit_group(struct trace_event_raw_sys_exit *ctx)
     cts->args[0] : int error_code
     */
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     void *event_data;
     struct exit_group_data_t *exit_group_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -917,7 +924,7 @@ int handle_openat_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[3] : umode_t mode
     */
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     void *event_data;
     struct openat_data_t *openat_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -968,7 +975,7 @@ int handle_unlinkat_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[2] : int flag
     */
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     void *event_data;
     struct unlinkat_data_t *unlinkat_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -1013,7 +1020,7 @@ int handle_accept4_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[2] : int upeer_addrlen
     */
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     void *event_data;
     struct accept4_data_t *accept4_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();
@@ -1060,7 +1067,7 @@ int handle_dup3_exit(struct trace_event_raw_sys_exit *ctx)
     ctx->args[2] : int flags
     */
     FILTER_SELF
-    FILTER_CONTAINER
+    if(filter_container == 1) FILTER_CONTAINER
     void *event_data;
     struct dup3_data_t *dup3_data;
     struct task_struct *curr = (struct task_struct *)bpf_get_current_task();

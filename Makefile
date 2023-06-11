@@ -63,8 +63,11 @@ endef
 $(call allow-override,CC,$(CROSS_COMPILE)cc)
 $(call allow-override,LD,$(CROSS_COMPILE)ld)
 
+# .PHONY: all
+# all: $(APPS)
+
 .PHONY: all
-all: $(APPS)
+all: $(OUTPUT)/$(APPS).bpf.o $(OUTPUT)/$(APPS).skel.h
 
 .PHONY: clean
 clean:

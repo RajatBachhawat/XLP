@@ -1,16 +1,15 @@
 FROM ubuntu:jammy
 
 RUN apt-get update && \
-    apt-get install -y build-essential git \
+    apt-get install -y build-essential \
                         zlib1g-dev libevent-dev \
-                        libelf-dev llvm \
-                        clang libc6-dev-i386
+                        libelf-dev libc6-dev-i386 \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir /disprotrack
 WORKDIR /disprotrack
-RUN git clone https://github.com/libbpf/libbpf-bootstrap.git && \
-    cd libbpf-bootstrap && \
-    git submodule update --init --recursive
+
+ADD .output/ .output/
 COPY ./writesnoop.bpf.c ./writesnoop.bpf.c
 COPY ./writesnoop.c ./writesnoop.c
 COPY ./writesnoop.h ./writesnoop.h
@@ -18,7 +17,7 @@ COPY ./syscall.h ./syscall.h
 COPY ./util.h ./util.h
 COPY ./buffer.h ./buffer.h
 COPY ./filesystem.h ./filesystem.h
-COPY ./Makefile ./Makefile
+COPY ./writesnoop.mk ./Makefile
 
 RUN make
-CMD ./writesnoop > ./logs/univlog.json
+CMD ./writesnoop -c > ./logs/univlog.json

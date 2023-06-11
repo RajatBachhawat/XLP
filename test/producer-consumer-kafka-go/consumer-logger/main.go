@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"bufio"
 
 	kafka "github.com/segmentio/kafka-go"
 )
@@ -31,12 +32,20 @@ func main() {
 
 	defer reader.Close()
 
-	fmt.Println("start consuming ... !!")
+	f, err := os.OpenFile("/app/log/out.txt", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	defer f.Close()
+
+	w := bufio.NewWriter(f)
+
+	fmt.Fprintf(w,"start consuming ... !!\n")
 	for {
 		m, err := reader.ReadMessage(context.Background())
 		if err != nil {
 			log.Fatalln(err)
 		}
-		fmt.Printf("message at topic:%v partition:%v offset:%v	%s = %s\n", m.Topic, m.Partition, m.Offset, string(m.Key), string(m.Value))
+		fmt.Fprintf(w,"message at topic:%v partition:%v offset:%v	%s = %s\n", m.Topic, m.Partition, m.Offset, string(m.Key), string(m.Value))
 	}
 }

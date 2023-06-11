@@ -10,7 +10,7 @@ services:
     - "2181:2181"
   
   kafka:
-    image: wurstmeister/kafka
+    image: wurstmeimakester/kafka
     env_file:
     - kafka/kafka-variables.env
     depends_on:
@@ -20,29 +20,29 @@ services:
     - '8082:8082'
     - '8083:8083'
 
-  mongo-db:
-    image: mongo:4.0
-    expose:
-    - "27017"
-    ports:
-    - "27017:27017"
-    environment:
-      MONGO_DATA_DIR: /data/db
-      MONGO_LOG_DIR: /dev/null
+  # mongo-db:
+  #   image: mongo:4.0
+  #   expose:
+  #   - "27017"
+  #   ports:
+  #   - "27017:27017"
+  #   environment:
+  #     MONGO_DATA_DIR: /data/db
+  #     MONGO_LOG_DIR: /dev/null
 
-  consumer-mongo-db:
-    build:
-      context: consumer-mongo-db
-    environment:
-      mongoURL: mongodb://mongo-db:27017
-      dbName: example_db
-      collectionName: example_coll
-      kafkaURL: kafka:9092
-      topic: topic1
-      GroupID: mongo-group
-    depends_on: 
-    - kafka
-    - mongo-db
+  # consumer-mongo-db:
+  #   build:
+  #     context: consumer-mongo-db
+  #   environment:
+  #     mongoURL: mongodb://mongo-db:27017
+  #     dbName: example_db
+  #     collectionName: example_coll
+  #     kafkaURL: kafka:9092
+  #     topic: topic1
+  #     GroupID: mongo-group
+  #   depends_on: 
+  #   - kafka
+  #   - mongo-db
 
   consumer-logger:
     build:
@@ -51,17 +51,19 @@ services:
       kafkaURL: kafka:9092
       topic: topic1
       GroupID: logger-group
+    volumes:
+      - /var/log/app/prod-cons/consumer/:/app/log/
     depends_on: 
     - kafka
 
-  producer-random:
-    build:
-      context: producer-random
-    environment:
-      kafkaURL: kafka:9092
-      topic: topic1
-    depends_on: 
-    - kafka
+  # producer-random:
+  #   build:
+  #     context: producer-random
+  #   environment:
+  #     kafkaURL: kafka:9092
+  #     topic: topic1
+  #   depends_on: 
+  #   - kafka
 
   producer-api:
     build:
@@ -69,6 +71,8 @@ services:
     environment:
       kafkaURL: kafka:9092
       topic: topic1
+    volumes:
+      - /var/log/app/prod-cons/producer/:/app/log/
     expose:
     - "8080"
     ports:
