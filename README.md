@@ -59,11 +59,11 @@ docker build -t xlp .
 ```
 docker run --rm -it --name xlp \
 --privileged --pid=host --cgroupns=host \
--v $PWD/logs/:/disprotrack/logs \
 -v /boot/config-$(uname -r):/boot/config-$(uname -r):ro \
 -v /sys/kernel/debug/:/sys/kernel/debug/ \
 xlp
 ```
+> Note: If you are using the image pulled from Docker Hub use the image name : `anon98484/xlp`
 2. Run the microservices/serverless architecture to be logged.
 
 ### Running the performace evaluation scripts
