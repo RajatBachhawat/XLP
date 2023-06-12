@@ -9,15 +9,10 @@ RUN apt-get update && \
 RUN mkdir /disprotrack
 WORKDIR /disprotrack
 
-ADD .output/ .output/
-COPY ./writesnoop.bpf.c ./writesnoop.bpf.c
-COPY ./writesnoop.c ./writesnoop.c
-COPY ./writesnoop.h ./writesnoop.h
-COPY ./syscall.h ./syscall.h
-COPY ./util.h ./util.h
-COPY ./buffer.h ./buffer.h
-COPY ./filesystem.h ./filesystem.h
-COPY ./writesnoop.mk ./Makefile
+ADD bin/ bin/
+ADD src/ src/
 
-RUN make
-CMD ./writesnoop -c > ./logs/univlog.json
+WORKDIR /disprotrack/src
+RUN make -f xlp.mk
+ENTRYPOINT [ "./xlp" ]
+CMD ["-c"]
