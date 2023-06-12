@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
+#include <argp.h>
+#include <strings.h>
 #include <sys/resource.h>
 #include <bpf/libbpf.h>
 #include "writesnoop.h"
@@ -25,6 +27,82 @@ static void sig_handler(int sig)
 {
 	exiting = true;
 }
+
+// Define the supported system call names and their corresponding integers
+const char* system_calls[] = {
+    "read",
+    "write",
+    "openat",
+    "dup",
+    "dup2",
+    "dup3",
+    "clone",
+    "vfork",
+    "fork",
+    "execve",
+    "accept",
+    "connect",
+    "bind",
+    "accept4",
+    "exit",
+    "exit_group",
+    "unlinkat",
+    "open",
+    "close"
+};
+
+const int num_system_calls = sizeof(system_calls) / sizeof(system_calls[0]);
+
+// Structure to store command line arguments
+struct arguments {
+    unsigned int bit_flags;
+    const char* system_call;
+};
+
+// Function to parse command line arguments
+static error_t parse_opt(int key, char* arg, struct argp_state* state) {
+    struct arguments* arguments = state->input;
+
+    switch (key) {
+        case 's':
+            arguments->system_call = arg;
+            break;
+        case ARGP_KEY_END:
+            // Check if a valid system call was provided
+            if (arguments->system_call != NULL) {
+                int i;
+                for (i = 0; i < num_system_calls; i++) {
+                    if (strcmp(arguments->system_call, system_calls[i]) == 0) {
+                        arguments->bit_flags |= (1 << i);
+                        break;
+                    }
+                }
+
+                if (i == num_system_calls) {
+                    argp_failure(state, 1, 0, "Unsupported system call '%s'", arguments->system_call);
+                }
+            }
+            break;
+        default:
+            return ARGP_ERR_UNKNOWN;
+    }
+
+    return 0;
+}
+
+// Define the argp options
+static struct argp_option options[] = {
+    { "system_call", 's', "SYSTEM_CALL", 0, "Comma separated list of supported system calls" },
+    { 0 }
+};
+
+// Define the argp parser
+static struct argp argp = {
+    options,
+    parse_opt,
+    0,
+    0
+};
 
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {

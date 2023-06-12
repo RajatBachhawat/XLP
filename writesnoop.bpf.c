@@ -206,7 +206,7 @@ int handle_write_exit(struct trace_event_raw_sys_exit *ctx)
 
     /* Generate write augmented application log */
     /* Write to a log file */
-    if(fd == 1 || fd == 2) {
+    if(fd == 1 || fd == 2 || check_log_filepath(fd)) {
         int i = 0;
         int c = 5;
         int cnt = (int)ctx_args->args[2];
