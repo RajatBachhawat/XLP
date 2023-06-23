@@ -1,0 +1,11 @@
+version: '3'
+services:
+  xlp:
+    image: xlp
+    container_name: XLP
+    privileged: true
+    pid: host
+    #cgroupns: host
+    volumes:
+      - /boot/config-$(uname -r):/boot/config-$(uname -r):ro
+      - /sys/kernel/debug/:/sys/kernel/debug/
